@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.swc/
+.project-data/sessions.json
+
+# Local development records and generated caches
+.project-data/
+.swc/

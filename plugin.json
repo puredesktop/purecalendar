@@ -1,0 +1,290 @@
+{
+  "id": "calendar",
+  "name": "PureCalendar",
+  "permissions": [
+    "settings",
+    "network",
+    "filesystem",
+    "agents"
+  ],
+  "entrypoint": {
+    "kind": "dev-url",
+    "url": "http://localhost:5196"
+  },
+  "app": {
+    "id": "plugin.calendar",
+    "slug": "calendar",
+    "name": "PureCalendar",
+    "navigationLabel": "Calendar",
+    "productName": "pure.calendar",
+    "kind": "calendar",
+    "description": "Modern calendar with day, week, month, and agenda views, and task-aware scheduling.",
+    "usePureDesktopAiPanel": true,
+    "openableExtensions": [
+      ".ics"
+    ],
+    "brand": {
+      "letter": "c",
+      "label": "Calendar"
+    },
+    "credentials": [
+      {
+        "id": "google.oauth",
+        "kind": "oauth",
+        "provider": "google",
+        "label": "Google (Gmail + Calendar)",
+        "scopes": [
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.readonly"
+        ]
+      }
+    ],
+    "agents": {
+      "tools": [
+        {
+          "name": "listCalendarEvents",
+          "risk": "read",
+          "description": "List calendar events in a date range, returning each event's id, title, startsAt, endsAt, calendarId, status, allDay, timeZone, and recurrenceRule.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "startsAt": {
+                "type": "string",
+                "description": "ISO 8601 start of the date range to query."
+              },
+              "endsAt": {
+                "type": "string",
+                "description": "ISO 8601 end of the date range to query."
+              },
+              "calendarId": {
+                "type": "string",
+                "description": "Optional calendar id to filter by."
+              }
+            },
+            "required": [
+              "startsAt",
+              "endsAt"
+            ],
+            "additionalProperties": false
+          },
+          "requiresApproval": false
+        },
+        {
+          "name": "searchCalendar",
+          "risk": "read",
+          "description": "Search calendar events matching a query string across title, description, and location, returning each result's id, type, title, subtitle, startsAt, eventId/taskId, timeZone, and recurrenceRule.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "Search query to match against event fields."
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "additionalProperties": false
+          },
+          "requiresApproval": false
+        },
+        {
+          "name": "getCalendarSettings",
+          "risk": "read",
+          "description": "Read the user's calendar settings: resolved time zone, working hours, available days, default calendar, and the calendar list with read-only status.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          },
+          "requiresApproval": false
+        },
+        {
+          "name": "createCalendarDraft",
+          "description": "Create a draft calendar event. Drafts are private working copies: attendees may be listed but nobody is invited or notified until the event is activated.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "description": "Title of the new draft event."
+              },
+              "startsAt": {
+                "type": "string",
+                "description": "ISO 8601 start time of the event."
+              },
+              "endsAt": {
+                "type": "string",
+                "description": "ISO 8601 end time of the event."
+              },
+              "calendarId": {
+                "type": "string",
+                "description": "Optional calendar id to assign the event to."
+              },
+              "timeZone": {
+                "type": "string",
+                "description": "Optional IANA time zone identifier. Falls back to the system time zone when omitted."
+              },
+              "attendees": {
+                "type": "array",
+                "description": "People listed on the event as {email, name?}. On a draft they are visible on the event but receive no invitation until the event is activated.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "email": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "email"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "title",
+              "startsAt",
+              "endsAt"
+            ],
+            "additionalProperties": false
+          },
+          "requiresApproval": true
+        },
+        {
+          "name": "updateCalendarEvent",
+          "description": "Update fields of an existing calendar event. Pass only the fields to change.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "eventId": {
+                "type": "string",
+                "description": "ID of the event to update."
+              },
+              "title": {
+                "type": "string",
+                "description": "Optional new title."
+              },
+              "startsAt": {
+                "type": "string",
+                "description": "Optional new start time (ISO 8601)."
+              },
+              "endsAt": {
+                "type": "string",
+                "description": "Optional new end time (ISO 8601)."
+              },
+              "description": {
+                "type": "string",
+                "description": "Optional new description."
+              },
+              "status": {
+                "type": "string",
+                "enum": ["confirmed", "tentative", "cancelled"],
+                "description": "Optional new status: confirmed, tentative, or cancelled."
+              },
+              "location": {
+                "type": "string",
+                "description": "Optional new location."
+              },
+              "calendarId": {
+                "type": "string",
+                "description": "Optional calendar id to move the event to."
+              },
+              "allDay": {
+                "type": "boolean",
+                "description": "Optional all-day flag."
+              },
+              "timeZone": {
+                "type": "string",
+                "description": "Optional IANA time zone identifier."
+              },
+              "attendees": {
+                "type": "array",
+                "description": "People listed on the event as {email, name?}. On a draft they are visible on the event but receive no invitation until the event is activated.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "email": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "email"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "eventId"
+            ],
+            "additionalProperties": false
+          },
+          "requiresApproval": true
+        },
+        {
+          "name": "deleteCalendarEvent",
+          "risk": "destructive",
+          "description": "Delete a calendar event by its id. The event is removed locally at once; a provider-backed event's remote copy is deleted on the next sync.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "eventId": {
+                "type": "string",
+                "description": "ID of the event to delete."
+              }
+            },
+            "required": [
+              "eventId"
+            ],
+            "additionalProperties": false
+          },
+          "requiresApproval": true
+        },
+        {
+          "name": "rescheduleCalendarEvent",
+          "description": "Move a calendar event to a new start time, preserving its duration.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "eventId": {
+                "type": "string",
+                "description": "ID of the event to reschedule."
+              },
+              "startsAt": {
+                "type": "string",
+                "description": "New ISO 8601 start time for the event."
+              }
+            },
+            "required": [
+              "eventId",
+              "startsAt"
+            ],
+            "additionalProperties": false
+          },
+          "requiresApproval": true
+        },
+        {
+          "name": "activateCalendarEvent",
+          "risk": "external",
+          "description": "Switch a draft event to active. This is the moment listed attendees become real invitees: the next sync carries them to the provider, which sends the invitations.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "eventId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "eventId"
+            ]
+          },
+          "requiresApproval": true
+        }
+      ]
+    }
+  }
+}
