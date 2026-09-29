@@ -381,11 +381,12 @@ const Root = styled.div`
   --calendar-time-gutter-width: 76px;
   --calendar-grid-line: var(--pure-chrome-line);
   --calendar-grid-line-strong: var(--platform-colors-border-strong);
-  --calendar-today-bg: var(
-    --app-bg,
-    color-mix(in srgb, var(--calendar-accent-fill) 8%, var(--calendar-bg))
+  --calendar-today-bg: color-mix(
+    in srgb,
+    var(--calendar-accent-fill) 10%,
+    var(--calendar-bg)
   );
-  --calendar-today-text: var(--calendar-accent-hover);
+  --calendar-today-text: var(--calendar-accent-fill);
   --calendar-time-rule: color-mix(
     in srgb,
     var(--calendar-grid-line-strong) 76%,
