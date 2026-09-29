@@ -225,7 +225,6 @@ Run:
 ```bash
 npm run typecheck
 npm run build
-npm run puredesktop:check
 ```
 
 Source checks:

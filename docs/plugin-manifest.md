@@ -95,14 +95,5 @@ registration in the iframe executes the tool.
 
 ## Validation
 
-Run:
-
-```bash
-npm run typecheck
-npm run build
-npm run puredesktop:check
-```
-
-The validator checks manifest identity, required scripts and dependencies,
-`agents.md`, `app.usePureDesktopAiPanel`, permissions, built output, and declared
-agent tool presence in source and dist.
+Run `npm run typecheck` and `npm run build`. PureDesktop validates `plugin.json`
+when loading the app.

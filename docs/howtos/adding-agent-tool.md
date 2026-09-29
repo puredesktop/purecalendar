@@ -27,12 +27,10 @@ manifest, registration catalog, and runtime handler all contain the same name.
    ```bash
    npm run typecheck
    npm run build
-   npm run puredesktop:check
    ```
 
-During dev mode, `npm run typecheck` is enough to catch TypeScript errors, but
-`npm run puredesktop:check` only proves the final package after `npm run build`
-refreshes `dist`.
+Run typecheck and build after changing a tool. PureDesktop validates `plugin.json`
+when loading the app; verify registration in the running iframe.
 
 ## Existing Tool Scaffold
 

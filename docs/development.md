@@ -61,7 +61,6 @@ In the configured app directory, this repository provides these commands:
 npm run typecheck
 npm run test
 npm run build
-npm run puredesktop:check
 ```
 
 Check the scripts and the [app guide](app-guide.md) for any test prerequisites. Run the relevant tests for your change and build before manifest validation. A successful browser preview or build does not establish that desktop features work: test opening, saving, closing and reopening, and the affected file, account, or drawer-agent workflow inside the desktop. For a new generated project, use that project's own scripts.

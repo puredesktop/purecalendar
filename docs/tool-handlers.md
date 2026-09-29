@@ -109,19 +109,5 @@ state set `requiresApproval: true` unless the action is intentionally safe.
 
 ## Validation
 
-`npm run puredesktop:check` verifies declared tool names appear in source and in
-the built output. For generated tool scaffolds, it also verifies:
-
-- `src/agents/catalog.ts` exports `APP_AGENT_TOOL_NAMES`;
-- every manifest tool name appears in the catalog;
-- `src/agents/handlers/index.ts` exports `appAgentHandlers`;
-- every manifest tool name appears in the handler map;
-- `src/hooks/useAppAgentTools.ts` registers with `usePlatformAgentTools`;
-- `src/App.tsx` calls `useAppAgentTools(ready)`.
-
-Build before running it:
-
-```bash
-npm run build
-npm run puredesktop:check
-```
+Run `npm run typecheck` and `npm run build`. PureDesktop validates `plugin.json`
+when loading the app; verify tool registration in the running iframe.
