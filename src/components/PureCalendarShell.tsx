@@ -36,7 +36,7 @@ import { PlatformIcon } from '@purescience/platform-ui/components/chrome/Platfor
 import { SegmentedControl } from '@purescience/platform-ui/components/common/buttons/SegmentedControl'
 import { Badge } from '@purescience/platform-ui/components/common/feedback/Badge'
 import { openExternalUrl } from '@purescience/platform-ui/bridge/os.mjs'
-import { firstUrlIn, splitTextIntoLinks } from '../lib/eventLinks'
+import { meetingUrlIn, eventDescriptionSegments, eventLinkLabel } from '../lib/eventLinks'
 import { EmptyState } from '@purescience/platform-ui/components/common/feedback/EmptyState'
 import { generateIcsEventExport } from '@purescience/platform-ui/ics/generateIcs'
 import {
@@ -104,7 +104,6 @@ import {
   removeEventWithTombstone,
   resolveRsvpAttendee,
   retryCalendarSyncFailures,
-  rsvpEvent,
   type RecurrenceEditScope,
   resolveCalendarTimeZone,
   searchCalendarStore,
@@ -481,22 +480,23 @@ const DetailsOverlayBackdrop = styled.div`
   place-items: center;
   padding: 28px;
   background: rgb(18 22 28 / 0.26);
-  backdrop-filter: blur(2px);
+  backdrop-filter: blur(8px);
 `
 
 const DetailsOverlay = styled.section`
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  width: min(1120px, calc(100vw - 56px));
+  width: min(960px, calc(100vw - 56px));
   max-height: min(820px, calc(100vh - 56px));
   overflow: hidden;
   border: 1px solid
     color-mix(in srgb, var(--platform-colors-border) 82%, transparent);
-  border-radius: var(--platform-radius-sm);
-  /* Canvas is the system surface colour, so this stays opaque and follows
-     light/dark even when the shell's tokens are absent — outside the desktop
-     app they are, and a modal you can read the calendar through is not one. */
-  background: var(--platform-colors-surface, Canvas);
+  border-radius: 18px;
+  /* Canvas is the system surface colour, so this follows
+     light/dark even when the shell's tokens are absent. A dense glass surface
+     keeps the event readable above the blurred calendar. */
+  background: color-mix(in srgb, var(--platform-colors-surface, Canvas) 96%, transparent);
+  backdrop-filter: blur(24px) saturate(115%);
   color: var(--platform-colors-text, CanvasText);
   box-shadow: 0 24px 80px rgb(0 0 0 / 0.26);
 `
@@ -607,16 +607,16 @@ const DetailsOverlayBody = styled.div`
   min-height: 0;
   overflow: auto;
   padding: 22px;
-  background: var(--calendar-bg);
+  background: transparent;
 `
 
 const DetailsPanel = styled.div`
   display: grid;
   gap: 18px;
   padding: 18px;
-  border: 1px solid var(--platform-colors-border);
+  border: 0;
   border-radius: var(--platform-radius-sm);
-  background: var(--platform-colors-surface);
+  background: transparent;
 `
 
 const DetailsEventGrid = styled.div`
@@ -721,8 +721,11 @@ const EventReadBadgeRow = styled.div`
 const EventReadFacts = styled.dl`
   display: grid;
   grid-template-columns: minmax(88px, max-content) 1fr;
-  gap: 8px 16px;
-  margin: 16px 0 0;
+  gap: 14px 20px;
+  margin: 24px 0;
+  padding: 20px 0;
+  border-block: 1px solid var(--platform-colors-border);
+  @media (max-width: 600px) { grid-template-columns: 1fr; gap: 6px; dd { margin-bottom: 10px; } }
 
   dt {
     color: var(--platform-colors-text-secondary);
@@ -753,8 +756,7 @@ const EventReadDescription = styled.div`
   color: var(--platform-colors-text);
   white-space: pre-wrap;
   overflow-wrap: break-word;
-  max-height: 340px;
-  overflow-y: auto;
+  max-width: 100%;
 
   a {
     color: var(--platform-colors-info, #0b57d0);
@@ -796,6 +798,8 @@ function EventReadBody({
   rsvpAttendee,
   readOnly,
   onRsvp,
+  rsvpBusy,
+  onOpenMail,
 }: {
   event: CalendarEvent
   calendar: Calendar
@@ -803,6 +807,8 @@ function EventReadBody({
   outsideAvailability: boolean
   rsvpAttendee: EventAttendee | undefined
   readOnly: boolean
+  rsvpBusy: boolean
+  onOpenMail?: () => void
   onRsvp: (response: EventAttendee['response'], email?: string) => void
 }): React.ReactElement {
   const startDay = dayLabel(new Date(event.startsAt), timeZone)
@@ -815,7 +821,7 @@ function EventReadBody({
   const repeat = event.recurrenceRule
     ? `Repeats ${event.recurrenceRule.interval && event.recurrenceRule.interval > 1 ? `every ${event.recurrenceRule.interval} ` : ''}${event.recurrenceRule.frequency}`
     : null
-  const joinUrl = event.conferenceLink?.trim() || firstUrlIn(event.description) || null
+  const joinUrl = meetingUrlIn(event.conferenceLink ?? '') || meetingUrlIn(event.description)
   const reminder = formatEventReminderMinutes(event.reminders)
   const attendees = event.attendees
     .map(attendee => attendee.name || attendee.email)
@@ -824,7 +830,7 @@ function EventReadBody({
   return (
     <div>
       <EventReadTitle>{event.title || 'Untitled event'}</EventReadTitle>
-      <EventReadWhen>{when}</EventReadWhen>
+      <EventReadWhen>{when}{!event.allDay && ` · ${timeZone}`}</EventReadWhen>
       {(repeat || outsideAvailability) && (
         <EventReadSubWhen>
           {[repeat, outsideAvailability ? 'Outside available hours' : null]
@@ -839,7 +845,7 @@ function EventReadBody({
         {event.status !== 'confirmed' && (
           <Badge tone="neutral">{event.status}</Badge>
         )}
-        {event.lifecycle === 'draft' && <Badge tone="neutral">draft</Badge>}
+        {event.lifecycle === 'draft' && !event.externalUid && <Badge tone="neutral">draft</Badge>}
       </EventReadBadgeRow>
 
       {joinUrl && (
@@ -854,28 +860,25 @@ function EventReadBody({
         </EventJoinRow>
       )}
 
-      {rsvpAttendee && (
+      {event.status !== 'cancelled' && (onOpenMail ? (
         <EventReadRsvp>
-          <Kicker>
-            RSVP as {rsvpAttendee.name || rsvpAttendee.email}
-          </Kicker>
-          <select
-            value={rsvpAttendee.response ?? 'needsAction'}
-            disabled={readOnly}
-            onChange={changeEvent =>
-              onRsvp(
-                changeEvent.target.value as EventAttendee['response'],
-                rsvpAttendee.email,
-              )
-            }
-          >
-            <option value="needsAction">No response yet</option>
-            <option value="accepted">Accepted</option>
-            <option value="tentative">Tentative</option>
-            <option value="declined">Declined</option>
-          </select>
+          <Button size="sm" variant="ghost" onClick={onOpenMail}>Respond in Mail</Button>
+          <EventReadSubWhen>Send your response to the organizer from the original invitation.</EventReadSubWhen>
         </EventReadRsvp>
-      )}
+      ) : rsvpAttendee && parseGoogleEventLocalId(event.id) && (
+        <EventReadRsvp aria-busy={rsvpBusy}>
+          <Kicker>Your response</Kicker>
+          {(['accepted', 'tentative', 'declined'] as const).map(response => (
+            <Button key={response} size="sm"
+              variant={rsvpAttendee.response === response ? 'primary' : 'ghost'}
+              disabled={readOnly || rsvpBusy}
+              onClick={() => onRsvp(response, rsvpAttendee.email)}>
+              {response === 'accepted' ? 'Accept' : response === 'tentative' ? 'Maybe' : 'Decline'}
+            </Button>
+          ))}
+          {rsvpBusy && <span role="status">Sending response…</span>}
+        </EventReadRsvp>
+      ))}
 
       <EventReadFacts>
         {event.location?.trim() && (
@@ -895,7 +898,7 @@ function EventReadBody({
                   void openExternalUrl(joinUrl)
                 }}
               >
-                {joinUrl}
+                {new URL(joinUrl).hostname}
               </a>
             </dd>
           </>
@@ -903,31 +906,36 @@ function EventReadBody({
         {attendees.length > 0 && (
           <>
             <dt>Attendees</dt>
-            <dd>{attendees.join(', ')}</dd>
+            <dd style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {event.attendees.map(attendee => <Badge key={attendee.email} tone="neutral">
+                {attendee.name || attendee.email} · {attendee.response === 'needsAction' ? 'Awaiting reply' : attendee.response}
+              </Badge>)}
+            </dd>
           </>
         )}
         {reminder && (
           <>
             <dt>Reminder</dt>
-            <dd>{reminder} before</dd>
+            <dd>{reminder} minutes before</dd>
           </>
         )}
       </EventReadFacts>
 
       {event.description.trim() && (
         <EventReadDescription>
-          {splitTextIntoLinks(event.description).map((segment, index) =>
+          {eventDescriptionSegments(event.description).map((segment, index) =>
             segment.type === 'link' ? (
               <a
                 key={index}
                 href={segment.href}
+                title={segment.href}
                 onClick={anchorEvent => {
                   if (segment.href?.startsWith('mailto:')) return
                   anchorEvent.preventDefault()
                   void openExternalUrl(segment.href ?? segment.value)
                 }}
               >
-                {segment.value}
+                {eventLinkLabel(segment)}
               </a>
             ) : (
               <span key={index}>{segment.value}</span>
@@ -2472,6 +2480,7 @@ export function PureCalendarShell({
   // Calendar server-side, so mail only writes these for IMAP). Sweep the
   // file — at mount, on refocus, and on a slow interval — and add each
   // auto-create invite silently: no selection, no navigation, no dialog.
+  // Include successfully sent responses if Mail could not open Calendar.
   // Intents younger than a few seconds are left alone; those belong to a
   // resource-open in flight (the manual RSVP flow), and consuming one here
   // would make that open report "payload was not found".
@@ -2495,7 +2504,6 @@ export function PureCalendarShell({
         const ready = Object.entries(intentStore.intents).filter(
           ([, intent]) =>
             intent.autoCreate === true &&
-            (intent.response ?? 'needsAction') === 'needsAction' &&
             nowMs - Date.parse(intent.createdAt) > 15_000,
         )
         if (ready.length === 0) return
@@ -3096,21 +3104,15 @@ export function PureCalendarShell({
             return
           }
           const calendarId = firstEditableCalendarId(store)
-          if (!calendarId) {
+          if (!calendarId && !intent.autoCreate) {
             setDraftError('No editable calendar is available for this invite.')
             return
           }
           if (intent.autoCreate) {
             setPendingDraft(null)
             setPendingInvite(null)
-            const response = intent.response ?? 'needsAction'
             setStore(current => {
-              const result = upsertInviteEvent(
-                current,
-                intent,
-                calendarId,
-                response,
-              )
+              const result = upsertMirroredInviteEvent(current, intent)
               setSelectedEventId(result.event.id)
               setSelectedTaskId(null)
               setAnchorDate(new Date(result.event.startsAt))
@@ -3430,8 +3432,9 @@ export function PureCalendarShell({
     })
   }
 
-  // "Me" for RSVP purposes: the attendee matching a connected account's
-  // address, falling back to the first listed attendee.
+  const [rsvpBusy, setRsvpBusy] = useState(false)
+  const rsvpInFlight = useRef(false)
+  // Only a connected identity may respond.
   const accountEmails = useMemo(
     () =>
       [
@@ -3453,14 +3456,9 @@ export function PureCalendarShell({
       setSelectedRangeError('This calendar is read-only.')
       return
     }
-    const selfEmail =
-      attendeeEmail ?? resolveRsvpAttendee(selectedEvent, accountEmails)?.email
-    const updated = rsvpEvent(selectedEvent, response, selfEmail)
-    recordUserOperation(
-      'calendar.event.rsvp',
-      `Responded ${response} to "${selectedEvent.title}"`,
-    )
-
+    const selfEmail = resolveRsvpAttendee(selectedEvent, accountEmails)?.email
+    if (attendeeEmail && attendeeEmail !== selfEmail) return
+    if (!selfEmail || rsvpInFlight.current || selectedEvent.status === 'cancelled') return
     // A Google-backed event routes through provider.rsvp, which resolves the
     // account's own attendee copy and deliberately avoids sendUpdates — a
     // full PATCH with sendUpdates=all would email every guest about our own
@@ -3472,22 +3470,13 @@ export function PureCalendarShell({
       parseGoogleEventLocalId(eventId) !== null &&
       !eventId.includes('#')
     if (providerEligible && calendarProvider) {
-      setStore(current => ({
-        ...current,
-        events: current.events.map(event =>
-          event.id === eventId
-            ? {
-                ...event,
-                attendees: updated.attendees,
-                status: updated.status,
-                busyStatus: updated.busyStatus,
-              }
-            : event,
-        ),
-      }))
+      rsvpInFlight.current = true
+      setRsvpBusy(true)
+      setSelectedRangeError(null)
       void calendarProvider
         .rsvp(eventId, response)
         .then(remote => {
+          recordUserOperation('calendar.event.rsvp', `Sent ${response} response`)
           setStore(current => ({
             ...current,
             events: current.events.map(event =>
@@ -3507,25 +3496,12 @@ export function PureCalendarShell({
             error instanceof Error ? error.message : String(error)
           console.warn('[purecalendar] provider RSVP failed:', message)
           setSelectedRangeError(`Could not send the RSVP to Google. (${message})`)
-          setStore(current => ({
-            ...current,
-            events: current.events.map(event =>
-              event.id === eventId
-                ? { ...event, syncState: 'failed' }
-                : event,
-            ),
-          }))
         })
+        .finally(() => { rsvpInFlight.current = false; setRsvpBusy(false) })
       return
     }
 
-    // Non-Google events (mail invites, feeds, local calendars) keep the
-    // local-update path; feed/local events are never pushed anyway.
-    updateSelectedEvent({
-      attendees: updated.attendees,
-      status: updated.status,
-      busyStatus: updated.busyStatus,
-    })
+    setSelectedRangeError('Respond from the original invitation in Mail so the organizer receives your reply.')
   }
 
   const commitRecurringEventEdit = (
@@ -5806,7 +5782,7 @@ export function PureCalendarShell({
                 </Title>
               </DetailsHeaderCopy>
               <DetailsHeaderActions>
-                {(selectedEvent || selectedTask) && (
+                {((selectedEvent && eventEditing) || selectedTask) && (
                   <DetailsSaveButton
                     type="button"
                     disabled={saveState === 'saving'}
@@ -5886,28 +5862,7 @@ export function PureCalendarShell({
                           ))}
                         </select>
                       </FieldLabel>
-                      <FieldLabel>
-                        Response
-                        <select
-                          value={pendingInvite.response}
-                          onChange={event =>
-                            setPendingInvite(current =>
-                              current
-                                ? {
-                                    ...current,
-                                    response: event.target
-                                      .value as CalendarInviteResponse,
-                                  }
-                                : current,
-                            )
-                          }
-                        >
-                          <option value="needsAction">No response yet</option>
-                          <option value="accepted">Accept</option>
-                          <option value="tentative">Maybe</option>
-                          <option value="declined">Decline</option>
-                        </select>
-                      </FieldLabel>
+                      <p>Importing saves a calendar copy. Respond from the original invitation in Mail to notify its organizer.</p>
                       <FieldLabel>
                         Description
                         <textarea
@@ -6597,7 +6552,7 @@ export function PureCalendarShell({
                               />
                             </FieldLabel>
                           </DetailsFullWidth>
-                          {selectedEventRsvpAttendee && (
+                          {selectedEventRsvpAttendee && parseGoogleEventLocalId(selectedEvent.id) && selectedEvent.status !== 'cancelled' && (
                             <FieldLabel>
                               RSVP as{' '}
                               {selectedEventRsvpAttendee.name ||
@@ -6782,6 +6737,12 @@ export function PureCalendarShell({
                         rsvpAttendee={selectedEventRsvpAttendee}
                         readOnly={selectedEventReadOnly}
                         onRsvp={rsvpSelectedEvent}
+                  rsvpBusy={rsvpBusy}
+                  onOpenMail={selectedEvent.sourceThreadId && selectedEvent.sourceAccountId !== 'ics-file' && !parseGoogleEventLocalId(selectedEvent.id) ? () => {
+                    const resourceId = `invitation/${encodeURIComponent(selectedEvent.sourceThreadId!)}/${encodeURIComponent(selectedEvent.sourceMessageId ?? '')}`
+                    void bridge.call(PLATFORM_BRIDGE_METHODS.WORKSPACE_OPEN_APP, [{ appSlug: 'mail', resourceId }])
+                      .catch(() => setSelectedRangeError('Could not open Mail. Open the original invitation there to respond.'))
+                  } : undefined}
                       />
                     )}
                     <DetailsActionRow>

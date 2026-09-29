@@ -154,11 +154,8 @@ describe('PureCalendar model', () => {
     expect(
       resolveRsvpAttendee(event, ['alex@example.com'])?.email,
     ).toBe('Alex@Example.com')
-    // No account match: fall back to the first attendee.
-    expect(resolveRsvpAttendee(event, ['other@example.com'])?.email).toBe(
-      'mira@example.com',
-    )
-    expect(resolveRsvpAttendee(event, [])?.email).toBe('mira@example.com')
+    expect(resolveRsvpAttendee(event, ['other@example.com'])).toBeUndefined()
+    expect(resolveRsvpAttendee(event, [])).toBeUndefined()
     expect(
       resolveRsvpAttendee({ ...event, attendees: [] }, ['alex@example.com']),
     ).toBeUndefined()
@@ -327,7 +324,7 @@ describe('PureCalendar model', () => {
 
   it('creates calendar events from email invite intents', () => {
     const event = createEventFromCalendarInviteIntent(
-      inviteIntent,
+      { ...inviteIntent, attendees: inviteIntent.attendees.map(a => ({ ...a, response: 'accepted' as const })) },
       'cal_work',
       'accepted',
       42,
@@ -369,7 +366,7 @@ describe('PureCalendar model', () => {
 
   it('keeps declined invite-created events free', () => {
     const event = createEventFromCalendarInviteIntent(
-      inviteIntent,
+      { ...inviteIntent, attendees: inviteIntent.attendees.map(a => ({ ...a, response: 'declined' as const })) },
       'cal_work',
       'declined',
       42,
@@ -404,7 +401,7 @@ describe('PureCalendar model', () => {
 
   it('a mirrored update never relocates an event the user already has', () => {
     const store = demoCalendarStore()
-    const manual = upsertInviteEvent(store, inviteIntent, 'cal_work', 'accepted')
+    const manual = upsertInviteEvent(store, { ...inviteIntent, attendees: inviteIntent.attendees.map(a => ({ ...a, response: 'accepted' as const })) }, 'cal_work', 'accepted')
     const mirrored = upsertMirroredInviteEvent(manual.store, {
       ...inviteIntent,
       sequence: inviteIntent.sequence + 1,
@@ -857,5 +854,38 @@ describe('PureCalendar model', () => {
         result => result.type === 'task' && result.taskId === 'task_brief',
       ),
     ).toBe(true)
+  })
+})
+
+describe('invitation response integrity', () => {
+  it('never applies an unverified response to the first guest', () => {
+    const event = createEventFromCalendarInviteIntent(inviteIntent, 'cal_work', 'accepted')
+    expect(event.attendees[0].response).toBe('needsAction')
+    expect(rsvpEvent(event, 'accepted')).toBe(event)
+    expect(rsvpEvent(event, 'accepted', 'stranger@example.com')).toBe(event)
+    expect(event.lifecycle).toBe('active')
+  })
+  it('a cancelled invitation cannot be revived by a replay or RSVP', () => {
+    const initial = upsertMirroredInviteEvent(demoCalendarStore(), inviteIntent)
+    const cancelled = upsertMirroredInviteEvent(initial.store, { ...inviteIntent, method: 'CANCEL', status: 'cancelled' })
+    const replay = upsertMirroredInviteEvent(cancelled.store, inviteIntent)
+    expect(replay.event.status).toBe('cancelled')
+    expect(rsvpEvent(replay.event, 'accepted', 'alex@example.com')).toBe(replay.event)
+    expect(replay.event.syncState).toBe('synced')
+    expect(replay.event).toEqual(replay.store.events.find(e => e.id === replay.event.id))
+  })
+  it('a reply updates attendee status without replacing meeting details', () => {
+    const initial = upsertMirroredInviteEvent(demoCalendarStore(), inviteIntent)
+    const reply = upsertMirroredInviteEvent(initial.store, { ...inviteIntent, method: 'REPLY', title: 'Reply', description: '', attendees: [{ ...inviteIntent.attendees[0], response: 'accepted' }] })
+    expect(reply.event.title).toBe(inviteIntent.title)
+    expect(reply.event.description).toBe(inviteIntent.description)
+    expect(reply.event.attendees[0].response).toBe('accepted')
+  })
+  it('keeps a declined mirror free and never queues a provider push on refresh', () => {
+    const initial = upsertMirroredInviteEvent(demoCalendarStore(), { ...inviteIntent, response: 'declined', attendees: [{ ...inviteIntent.attendees[0], response: 'declined' }] })
+    const update = upsertMirroredInviteEvent(initial.store, { ...inviteIntent, sequence: 2 })
+    expect(update.event.busyStatus).toBe('free')
+    expect(update.event.attendees[0].response).toBe('declined')
+    expect(update.event.syncState).toBe('synced')
   })
 })

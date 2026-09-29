@@ -670,6 +670,11 @@ export class GoogleCalendarProvider implements CalendarProvider {
     const hasSelfFlag = (current.attendees ?? []).some(
       attendee => attendee.self === true,
     )
+    if (current.status === 'cancelled') throw new Error('This event was cancelled.')
+    if (!hasSelfFlag && !(current.attendees ?? []).some(attendee =>
+      selfEmail && attendee.email?.trim().toLowerCase() === selfEmail)) {
+      throw new Error('The connected account is not an attendee of this event.')
+    }
     const attendees = (current.attendees ?? []).map(attendee =>
       (
         hasSelfFlag
