@@ -1118,12 +1118,18 @@ const CalendarViewport = styled.div`
 
 const RangeControls = styled.div`
   display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px;
-  border: 1px solid var(--pure-chrome-line);
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  min-height: var(--platform-button-height-sm, 28px);
+  box-sizing: border-box;
+  border: 1px solid var(--platform-colors-border);
   border-radius: var(--platform-radius-sm);
-  background: var(--pure-chrome-well);
+  background: var(--platform-colors-surface);
+
+  > button {
+    min-height: calc(var(--platform-button-height-sm, 28px) - 2px);
+  }
 `
 
 /** Palette offered when recolouring a calendar (Google-ish hues). */
