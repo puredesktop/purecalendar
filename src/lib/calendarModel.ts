@@ -813,12 +813,7 @@ export function removeEventWithTombstone(
   }
 }
 
-/**
- * The attendee an RSVP from this app should act as. "Me" is whichever
- * attendee matches one of the connected accounts' addresses; only when none
- * matches do we fall back to the first attendee (the pre-account behavior,
- * still right for single-attendee mirrored invites).
- */
+/** Only an attendee matching a connected identity can respond. */
 export function resolveRsvpAttendee(
   event: CalendarEvent,
   accountEmails: string[],
@@ -831,22 +826,20 @@ export function resolveRsvpAttendee(
   return (
     event.attendees.find(attendee =>
       normalized.has(attendee.email.trim().toLowerCase()),
-    ) ?? event.attendees[0]
+    )
   )
 }
 
 export function rsvpEvent(
   event: CalendarEvent,
   response: EventAttendee['response'],
-  attendeeEmail = resolveRsvpAttendee(event, [])?.email,
+  attendeeEmail?: string,
 ): CalendarEvent {
-  const normalizedEmail = attendeeEmail?.toLowerCase()
-  const attendees = event.attendees.map((attendee, index) =>
-    (
-      normalizedEmail
-        ? attendee.email.toLowerCase() === normalizedEmail
-        : index === 0
-    )
+  const normalizedEmail = attendeeEmail?.trim().toLowerCase()
+  if (event.status === 'cancelled' || !normalizedEmail ||
+      !event.attendees.some(attendee => attendee.email.trim().toLowerCase() === normalizedEmail)) return event
+  const attendees = event.attendees.map(attendee =>
+    attendee.email.trim().toLowerCase() === normalizedEmail
       ? { ...attendee, response }
       : attendee,
   )
@@ -1051,26 +1044,17 @@ export function upsertMirroredInviteEvent(
   const existing = store.events.find(
     event => event.externalUid === intent.uid,
   )
-  if (existing) {
-    return upsertInviteEvent(store, intent, existing.calendarId)
-  }
-  const ensured = ensureMailInviteCalendar(store)
+  const ensured = existing ? { store, calendarId: existing.calendarId } : ensureMailInviteCalendar(store)
   const result = upsertInviteEvent(ensured.store, intent, ensured.calendarId)
-  return {
-    event: result.event,
-    store: {
-      ...result.store,
-      events: result.store.events.map(event =>
-        event.id === result.event.id
-          ? {
-              ...event,
-              source: 'feed' as const,
-              syncState: 'synced' as const,
-            }
-          : event,
-      ),
-    },
+  // Receiving an email never authorizes publishing changes to a provider.
+  const event: CalendarEvent = {
+    ...result.event,
+    source: existing?.source ?? 'feed',
+    syncState: existing?.syncState ?? 'synced',
   }
+  return { event, store: { ...result.store, events: result.store.events.map(item =>
+    item.id === event.id ? event : item) } }
+
 }
 
 export function canEditCalendarEvent(
@@ -1181,7 +1165,7 @@ export function createDraftEvent(
 }
 
 export function isDraftEvent(event: CalendarEvent): boolean {
-  return event.lifecycle === 'draft'
+  return event.lifecycle === 'draft' && !event.sourceMessageId
 }
 
 /**
@@ -1256,6 +1240,7 @@ export function createEventFromCalendarInviteIntent(
       `event_invite_${intent.uid.replace(/[^a-z0-9_-]/gi, '_')}`,
       now,
     ),
+    lifecycle: 'active',
     externalUid: intent.uid,
     externalSequence: intent.sequence,
     externalMethod: intent.method,
@@ -1271,16 +1256,14 @@ export function createEventFromCalendarInviteIntent(
     organizer: intent.organizer
       ? { ...intent.organizer, response: 'accepted' }
       : undefined,
-    attendees: intent.attendees.map((attendee, index) => ({
-      ...attendee,
-      response: index === 0 ? response : attendee.response,
-    })),
+    attendees: intent.attendees.map(attendee => ({ ...attendee })),
     linkedItems: [
       { type: 'email', id: intent.source.threadId, label: intent.source.label },
     ],
     recurrenceRule: undefined,
-    source: 'provider',
-    syncState: 'pending',
+    // An incoming invitation is a received copy, never a new organizer event.
+    source: 'feed',
+    syncState: 'synced',
   }
 }
 
@@ -1301,8 +1284,16 @@ export function upsertInviteEvent(
       store: { ...store, events: [...store.events, incoming] },
       event: incoming,
     }
-  if ((existing.externalSequence ?? 0) > intent.sequence)
+  if ((existing.externalSequence ?? 0) > intent.sequence ||
+      (existing.status === 'cancelled' && intent.method !== 'CANCEL' &&
+       (existing.externalSequence ?? 0) === intent.sequence))
     return { store, event: existing }
+
+  if (intent.method === 'REPLY') {
+    const event = { ...existing, attendees: existing.attendees.map(attendee =>
+      incoming.attendees.find(item => item.email.toLowerCase() === attendee.email.toLowerCase()) ?? attendee) }
+    return { store: { ...store, events: store.events.map(item => item.id === event.id ? event : item) }, event }
+  }
 
   // Invites are legitimately re-delivered with the SAME sequence number
   // (organizers often update without bumping SEQUENCE, and mail clients
@@ -1322,6 +1313,7 @@ export function upsertInviteEvent(
   const updated: CalendarEvent = {
     ...existing,
     calendarId,
+    lifecycle: 'active',
     externalSequence: intent.sequence,
     externalMethod: intent.method,
     sourceAccountId: intent.source.accountId,
@@ -1334,11 +1326,12 @@ export function upsertInviteEvent(
     endsAt: intent.endsAt,
     timeZone: intent.timeZone,
     status: intent.status,
-    busyStatus: incoming.busyStatus,
+    busyStatus: intent.status === 'cancelled' ? 'free' :
+      response === 'needsAction' ? existing.busyStatus : incoming.busyStatus,
     organizer: incoming.organizer,
     attendees: mergedAttendees,
     linkedItems: incoming.linkedItems,
-    syncState: 'pending',
+    syncState: existing.syncState,
   }
   return {
     store: {

@@ -661,6 +661,16 @@ describe('google calendar provider', () => {
     expect(synced.removedEventIds).toEqual(['g:primary-cal:flaky-evt'])
   })
 
+  it('refuses RSVP when no attendee matches the connected account', async () => {
+    const methods: string[] = []
+    const { provider } = providerWith(request => {
+      methods.push(request.method ?? 'GET')
+      return jsonResponse({ ...TIMED_EVENT, attendees: [{ email: 'someone@example.com' }] })
+    })
+    await expect(provider.rsvp('g:primary-cal:evt-1', 'accepted')).rejects.toThrow('not an attendee')
+    expect(methods).not.toContain('PATCH')
+  })
+
   it('rsvp patches only the self attendee', async () => {
     const patched: GoogleCalendarFetchRequest[] = []
     const { provider } = providerWith(request => {
