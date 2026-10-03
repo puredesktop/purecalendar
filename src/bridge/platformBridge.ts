@@ -253,3 +253,33 @@ export function onOperationRecorded(
   if (!operationsBridgeAvailable()) return () => undefined
   return onPlatformOperationRecordedBridge(listener)
 }
+
+/**
+ * Opens PureMeet on this event. The event's facts travel in the resource id
+ * (URL-safe base64 of a small JSON), so PureMeet needs no access to the
+ * calendar store: it finds or creates the meeting for the event itself.
+ */
+export async function openMeetingForEvent(event: {
+  id: string
+  title: string
+  startsAt: string
+  endsAt: string
+  attendees: { name: string; email: string }[]
+  projectId?: string
+}): Promise<void> {
+  const payload = JSON.stringify({
+    v: 1,
+    calendarEventId: event.id,
+    title: event.title,
+    start: event.startsAt,
+    end: event.endsAt,
+    attendees: event.attendees.map(person => ({ name: person.name, email: person.email })),
+    ...(event.projectId ? { projectId: event.projectId } : {}),
+  })
+  const bytes = new TextEncoder().encode(payload)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  // PureMeet matches open requests by suffix, so the payload comes first and `.event` last.
+  const resourceId = `${btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}.event`
+  await bridge.call(PLATFORM_BRIDGE_METHODS.WORKSPACE_OPEN_APP, [{ appSlug: 'meet', resourceId }])
+}
