@@ -38,6 +38,7 @@ import { SegmentedControl } from '@purescience/platform-ui/components/common/but
 import { Badge } from '@purescience/platform-ui/components/common/feedback/Badge'
 import { openExternalUrl } from '@purescience/platform-ui/bridge/os.mjs'
 import { eventMeetingUrl, eventDescriptionSegments, eventLinkLabel } from '../lib/eventLinks'
+import { openMeetingForEvent } from '../bridge/platformBridge'
 import { EmptyState } from '@purescience/platform-ui/components/common/feedback/EmptyState'
 import { generateIcsEventExport } from '@purescience/platform-ui/ics/generateIcs'
 import {
@@ -6791,6 +6792,13 @@ export function PureCalendarShell({
                         disabled={writableCalendars.length === 0}
                       >
                         Duplicate
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={() => void openMeetingForEvent(selectedEvent)}
+                        title="Get ready, take notes and follow up in PureMeet"
+                      >
+                        Meeting page
                       </Button>
                       <Button size="sm" onClick={downloadSelectedEvent}>
                         Download .ics
