@@ -18,7 +18,7 @@ export function App(): React.ReactElement {
   useAppAgentTools(ready)
   const standalone = isStandaloneDevMode()
   const appReady = ready || standalone
-  const { store, calendarProvider, notice, bootError } =
+  const { store, calendarProvider, notice, bootError, retryBoot } =
     usePureCalendarBoot(appReady)
   const storeRef = useRef<CalendarStore | null>(null)
   useEffect(() => {
@@ -51,7 +51,8 @@ export function App(): React.ReactElement {
       <AppFrame>
         <EmptyState
           tone="error"
-          title="PureCalendar boot failed"
+          title="Calendar could not open"
+          action={{ label: 'Try again', onClick: retryBoot }}
           message={bootError.message}
         />
       </AppFrame>

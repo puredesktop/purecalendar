@@ -51,12 +51,12 @@ import {
   isStandaloneDevMode,
   networkFetch,
   recordOperation,
-  saveCalendarSettings,
   saveTextFile,
-  writeCalendarStoreFile,
   type OAuthCredentialStatus,
 } from '../bridge/platformBridge'
 import { mergeGoogleSnapshot } from '../hooks/usePureCalendarBoot'
+import { useCalendarStorePersistence } from '../hooks/useCalendarStorePersistence'
+import { mergeCalendarPushResult } from '../lib/calendarSync'
 import {
   syncAgentStore,
   setAgentStoreDispatch,
@@ -66,10 +66,6 @@ import {
   parseIcsFeed,
   pruneIcsFeeds,
 } from '../lib/icsFeed'
-import {
-  CALENDAR_STORE_BACKUP_FILE,
-  CALENDAR_STORE_FILE,
-} from '../lib/calendarStorePersistence'
 import { calendarCommandForKey } from '../lib/calendarCommands'
 import {
   allDayEventPatch,
@@ -2457,6 +2453,8 @@ export function PureCalendarShell({
   onResourceHandled?: () => void
 }): React.ReactElement {
   const [store, setStore] = useState(initialStore)
+  const latestStoreRef = useRef(store)
+  latestStoreRef.current = store
   const [view, setView] = useState<CalendarView>(
     initialStore.settings.viewMode ?? 'week',
   )
@@ -2550,28 +2548,8 @@ export function PureCalendarShell({
   const [landedEventId, setLandedEventId] = useState<string | null>(null)
   const [resizeState, setResizeState] = useState<EventResizeState | null>(null)
   const [eventUndoStack, setEventUndoStack] = useState<CalendarEventUndo[]>([])
-  const [persistFailure, setPersistFailure] = useState<string | null>(null)
-  /**
-   * What the store's persistence is actually doing. `dirty` means an edit
-   * is made but not yet written — the state the old unconditional "Saved"
-   * label misreported.
-   */
-  const [saveState, setSaveState] = useState<'idle' | 'dirty' | 'saving' | 'saved'>(
-    'idle',
-  )
-  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
-  // Last successfully-persisted snapshot (serialized for cheap comparison,
-  // value for rolling into the backup file before the next overwrite).
-  const lastPersistedRef = useRef<{
-    serialized: string
-    value: CalendarStore
-  } | null>(null)
-  const persistDirtyRef = useRef(false)
-  // Serialized settings as last flushed to app settings; boot-hydrated
-  // settings match what is already on disk, so the first run is a no-op.
-  const lastSavedSettingsRef = useRef<string | null>(
-    JSON.stringify(initialStore.settings),
-  )
+  const { saveState, lastSavedAt, persistFailure, persistDirtyRef, saveNow } =
+    useCalendarStorePersistence(store)
   const [selectedRangeError, setSelectedRangeError] = useState<string | null>(
     null,
   )
@@ -2711,64 +2689,8 @@ export function PureCalendarShell({
     )
   }, [selectedEvent?.id, selectedEventReadOnly])
 
-  // Persist every store change (debounced). Before this, all events, tasks,
-  // and edits lived only in React state and were silently lost on reload.
-  // The previous good save is rolled into a backup file first so a torn or
-  // corrupt write is always one step recoverable (same pattern as PureSheets).
-  //
-  // The details overlay reports this state rather than asserting "Saved":
-  // the header used to say so unconditionally, including during the 800ms
-  // the write had not happened yet, which is the moment a reader most
-  // needs the truth.
-  useEffect(() => {
-    const serialized = JSON.stringify(store)
-    if (serialized === lastPersistedRef.current?.serialized) return
-    persistDirtyRef.current = true
-    setSaveState('dirty')
-    const timeout = window.setTimeout(() => {
-      const previous = lastPersistedRef.current
-      void (async () => {
-        try {
-          if (previous && previous.serialized !== serialized) {
-            await writeCalendarStoreFile(
-              CALENDAR_STORE_BACKUP_FILE,
-              previous.value,
-            ).catch((error: unknown) => {
-              // The main write below still runs (and surfaces its own
-              // failure); losing one backup generation is tolerable but
-              // worth a trace in the log.
-              console.warn(
-                '[purecalendar] failed to write store backup file:',
-                error,
-              )
-            })
-          }
-          setSaveState('saving')
-          await writeCalendarStoreFile(CALENDAR_STORE_FILE, store)
-          lastPersistedRef.current = { serialized, value: store }
-          persistDirtyRef.current = false
-          setPersistFailure(null)
-          setSaveState('saved')
-          setLastSavedAt(new Date())
-        } catch (error) {
-          // A failed write is a standing data-loss risk, not a transient
-          // hiccup — surface it until a later save succeeds.
-          setSaveState('dirty')
-          setPersistFailure(
-            error instanceof Error
-              ? error.message
-              : 'The calendar store could not be saved.',
-          )
-        }
-      })()
-    }, 800)
-    return () => window.clearTimeout(timeout)
-  }, [store])
-
-  // Push pending edits of Google-backed events to the provider (debounced).
-  // Only events whose content is unchanged since the push are replaced with
-  // the synced result — an edit racing the push simply stays pending and is
-  // picked up by the next round.
+  // Push active pending edits; private drafts stay local until activation.
+  const [pushRevision, setPushRevision] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null)
   const [refreshError, setRefreshError] = useState<string | null>(null)
@@ -2776,8 +2698,15 @@ export function PureCalendarShell({
   useEffect(() => {
     if (!calendarProvider) return
     if (googleSyncInFlightRef.current) return
+    const googleCalendarIds = new Set(
+      store.calendars.filter(calendar => calendar.sourceId === 'google-source').map(calendar => calendar.id),
+    )
     const hasPending = store.events.some(
-      event => event.source === 'provider' && event.syncState === 'pending',
+      event =>
+        event.source === 'provider' &&
+        event.syncState === 'pending' &&
+        event.lifecycle !== 'draft' &&
+        (parseGoogleEventLocalId(event.id) !== null || googleCalendarIds.has(event.calendarId)),
     )
     // Deletions (tombstoned provider events) push through the same loop.
     const hasTombstones = (store.removedEventIds ?? []).some(id =>
@@ -2791,41 +2720,7 @@ export function PureCalendarShell({
       void calendarProvider
         .sync(pushed)
         .then(result => {
-          const replacements = new Map<
-            string,
-            { original: CalendarEvent; next: CalendarEvent }
-          >()
-          pushed.events.forEach((event, index) => {
-            const next = result.events[index]
-            if (next && next !== event) {
-              replacements.set(event.id, { original: event, next })
-            }
-          })
-          // Tombstones the provider confirmed deleting are pruned; ones the
-          // user added while this push was in flight stay queued.
-          const confirmedDeletes = new Set(
-            (pushed.removedEventIds ?? []).filter(
-              id => !(result.removedEventIds ?? []).includes(id),
-            ),
-          )
-          if (replacements.size === 0 && confirmedDeletes.size === 0) return
-          setStore(current => ({
-            ...current,
-            events: current.events.map(event => {
-              const replacement = replacements.get(event.id)
-              return replacement &&
-                JSON.stringify(event) === JSON.stringify(replacement.original)
-                ? replacement.next
-                : event
-            }),
-            ...(confirmedDeletes.size
-              ? {
-                  removedEventIds: (current.removedEventIds ?? []).filter(
-                    id => !confirmedDeletes.has(id),
-                  ),
-                }
-              : {}),
-          }))
+          setStore(current => mergeCalendarPushResult(current, pushed, result))
         })
         .catch(error => {
           console.warn(
@@ -2835,10 +2730,11 @@ export function PureCalendarShell({
         })
         .finally(() => {
           googleSyncInFlightRef.current = false
+          if (latestStoreRef.current !== pushed) setPushRevision(value => value + 1)
         })
     }, 1200)
     return () => window.clearTimeout(timeout)
-  }, [store, calendarProvider, refreshing])
+  }, [store, calendarProvider, refreshing, pushRevision])
 
   // Pull a fresh snapshot from Google and merge it into the current store;
   // without a periodic + manual refresh a day-long session silently drifts
@@ -2970,26 +2866,6 @@ export function PureCalendarShell({
     }, 1000)
     return () => window.clearTimeout(timeout)
   }, [store.events])
-
-  // Persist settings whenever they change. Previously only viewMode was
-  // written (a special case inside changeView); working hours, availability
-  // days, and timezone mode silently reset on every reload. One effect for
-  // all settings replaces the per-handler merges and their read-modify-write
-  // interleaving hazard.
-  useEffect(() => {
-    const serialized = JSON.stringify(store.settings)
-    if (serialized === lastSavedSettingsRef.current) return
-    const timeout = window.setTimeout(() => {
-      void saveCalendarSettings(store.settings)
-        .then(() => {
-          lastSavedSettingsRef.current = serialized
-        })
-        .catch(() => {
-          setPersistFailure('Calendar settings could not be saved.')
-        })
-    }, 500)
-    return () => window.clearTimeout(timeout)
-  }, [store.settings])
 
   // Warn before closing while a save is pending or failed; the debounce above
   // means the last edit can be up to ~800ms behind the disk.
@@ -3345,46 +3221,6 @@ export function PureCalendarShell({
     setSelectedTaskId(null)
     setSelectedRangeError(null)
     setDetailsOpen(true)
-  }
-
-  /**
-   * Write the store now instead of waiting out the debounce. Edits already
-   * persist on their own; this exists because closing a panel and trusting
-   * an autosave you cannot see is an uncomfortable way to leave work, and
-   * because it gives a failure somewhere to be reported at the moment the
-   * user asked for it.
-   */
-  const saveNow = async (): Promise<void> => {
-    const serialized = JSON.stringify(store)
-    if (serialized === lastPersistedRef.current?.serialized) {
-      setSaveState('saved')
-      return
-    }
-    setSaveState('saving')
-    try {
-      const previous = lastPersistedRef.current
-      if (previous && previous.serialized !== serialized) {
-        await writeCalendarStoreFile(
-          CALENDAR_STORE_BACKUP_FILE,
-          previous.value,
-        ).catch((error: unknown) => {
-          console.warn('[purecalendar] failed to write store backup file:', error)
-        })
-      }
-      await writeCalendarStoreFile(CALENDAR_STORE_FILE, store)
-      lastPersistedRef.current = { serialized, value: store }
-      persistDirtyRef.current = false
-      setPersistFailure(null)
-      setSaveState('saved')
-      setLastSavedAt(new Date())
-    } catch (error) {
-      setSaveState('dirty')
-      setPersistFailure(
-        error instanceof Error
-          ? error.message
-          : 'The calendar store could not be saved.',
-      )
-    }
   }
 
   const updateSelectedEvent = (patch: Partial<CalendarEvent>): void => {
@@ -5802,10 +5638,11 @@ export function PureCalendarShell({
                   <DetailsSaveButton
                     type="button"
                     disabled={saveState === 'saving'}
-                    // Save is the way out of the dialog: write, then close.
-                    // Leaving it open after a save reads as "nothing happened".
+                    // Close only after the current revision is confirmed saved.
                     onClick={() => {
-                      void saveNow().then(() => setDetailsOpen(false))
+                      void saveNow().then(saved => {
+                        if (saved) setDetailsOpen(false)
+                      })
                     }}
                   >
                     {saveState === 'saving' ? 'Saving…' : 'Save'}
@@ -5828,6 +5665,11 @@ export function PureCalendarShell({
             </DetailsOverlayHeader>
             <DetailsOverlayBody>
               <DetailsPanel>
+                {persistFailure && (
+                  <ErrorNote role="alert">
+                    Changes could not be saved. {persistFailure} Try Save again.
+                  </ErrorNote>
+                )}
                 {pendingInvite ? (
                   <>
                     <Title>Review calendar invite</Title>

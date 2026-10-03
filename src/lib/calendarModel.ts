@@ -243,6 +243,30 @@ export function parseEventReminderMinutes(input: string): EventReminder[] {
     }))
 }
 
+// Recurrence expansion converts many instants in the same zone. Reuse the
+// formatter (which still computes the offset per date) with bounded storage.
+const zonedFormatters = new Map<string, Intl.DateTimeFormat>()
+function zonedFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = zonedFormatters.get(timeZone)
+  if (cached) return cached
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  })
+  if (zonedFormatters.size >= 32) {
+    const oldest = zonedFormatters.keys().next().value
+    if (oldest !== undefined) zonedFormatters.delete(oldest)
+  }
+  zonedFormatters.set(timeZone, formatter)
+  return formatter
+}
+
 function zonedParts(
   date: Date,
   timeZone: string,
@@ -254,16 +278,7 @@ function zonedParts(
   minute: number
   second: number
 } {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(date)
+  const parts = zonedFormatter(timeZone).formatToParts(date)
   const values = Object.fromEntries(parts.map(part => [part.type, part.value]))
   return {
     year: Number(values.year),

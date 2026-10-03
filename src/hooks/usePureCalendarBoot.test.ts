@@ -38,6 +38,15 @@ function store(overrides: Partial<CalendarStore>): CalendarStore {
 }
 
 describe('mergeGoogleSnapshot', () => {
+  it.each(['failed', 'conflict'] as const)('preserves %s edits instead of replacing or losing them on refresh', syncState => {
+    const edit = event({ id: 'g:cal:edit', title: 'Unsent local edit', syncState })
+    const local = store({ events: [edit] })
+    const remote = store({ events: [event({ id: edit.id, title: 'Older remote' })] })
+    expect(mergeGoogleSnapshot(local, remote).events).toEqual([edit])
+    expect(mergeGoogleSnapshot(local, store({ events: [] })).events).toEqual([edit])
+    expect(mergeGoogleSnapshot(local, store({ failedCalendarIds: ['cal'] })).events).toEqual([edit])
+  })
+
   it('replaces stale provider events with the remote snapshot', () => {
     const local = store({
       events: [
