@@ -6,7 +6,7 @@ import type { CalendarEvent } from '../types'
 const TitleRow = styled.span`
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
   strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `
@@ -21,7 +21,7 @@ export function EventSurfaceTitle({ event, draftPrefix = false }: { event: Calen
   return <TitleRow>
     <strong>{draftPrefix ? 'Draft · ' : ''}{event.title}</strong>
     {!eventMeetingUrl(event) && <MissingLink role="img" aria-label="No meeting link" title="No meeting link">
-      <Link2Off size={14} strokeWidth={1.8} aria-hidden="true" />
+      <Link2Off size={12} strokeWidth={1.6} aria-hidden="true" />
     </MissingLink>}
   </TitleRow>
 }
