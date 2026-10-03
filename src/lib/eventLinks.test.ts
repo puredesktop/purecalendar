@@ -5,6 +5,7 @@ import {
   splitTextIntoLinks,
   eventDescriptionSegments,
   meetingUrlIn,
+  eventMeetingUrl,
 } from './eventLinks'
 
 describe('splitTextIntoLinks', () => {
@@ -99,5 +100,19 @@ describe('calendar descriptions', () => {
       ),
     ).toBe('https://meet.google.com/example-room')
     expect(meetingUrlIn('https://example.com/help')).toBeNull()
+  })
+})
+
+describe('eventMeetingUrl', () => {
+  it('accepts an explicit custom conference URL', () => {
+    expect(eventMeetingUrl({ conferenceLink: ' https://example.com/room/42 ', description: '' })).toBe('https://example.com/room/42')
+  })
+  it('recognizes embedded meeting destinations including modern Teams links', () => {
+    expect(eventMeetingUrl({ description: 'Join https://teams.microsoft.com/meet/123?p=abc' })).toBe('https://teams.microsoft.com/meet/123?p=abc')
+    expect(eventMeetingUrl({ description: '', location: 'https://meet.google.com/abc-defg-hij' })).toBe('https://meet.google.com/abc-defg-hij')
+  })
+  it('does not treat unrelated or unsafe links as meeting destinations', () => {
+    expect(eventMeetingUrl({ conferenceLink: 'javascript:alert(1)', description: 'Help: https://example.com/help' })).toBeNull()
+    expect(eventMeetingUrl({ description: '' })).toBeNull()
   })
 })
