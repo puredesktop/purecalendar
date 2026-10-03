@@ -14,7 +14,7 @@ import type {
  * is untrusted: a torn write, a hand-edited file, or an older schema must
  * never crash boot or corrupt the in-memory model. Invalid top-level shapes
  * reject the whole blob (the caller falls back to the rolling backup, then
- * the demo seed); invalid individual records are dropped with the rest kept.
+ * a recovery error); invalid individual records are dropped with the rest kept.
  */
 
 export const CALENDAR_STORE_FILE = 'calendar-store.json'
@@ -198,6 +198,7 @@ function normalizeTask(input: unknown): CalendarTask | null {
   return {
     id,
     title,
+    calendarId: asString(input.calendarId),
     dueAt: asIsoDate(input.dueAt),
     scheduledStart: asIsoDate(input.scheduledStart),
     scheduledEnd: asIsoDate(input.scheduledEnd),
@@ -316,6 +317,13 @@ function normalizeSettings(input: unknown): CalendarSettings {
         typeof item.visible === 'boolean',
     )
   }
+  for (const key of ['googleExtraCalendarIds', 'removedCalendarIds'] as const) {
+    if (Array.isArray(input[key])) {
+      settings[key] = [...new Set(input[key].filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0,
+      ))]
+    }
+  }
   if (input.demoCleared === true) settings.demoCleared = true
   return settings
 }
@@ -339,9 +347,9 @@ export function parsePersistedCalendarStore(
   const calendars = value.calendars
     .map(normalizeCalendar)
     .filter((item): item is Calendar => item !== null)
-  // A store with no calendars cannot hold events; treat as corrupt so the
-  // caller recovers from backup instead of silently blanking the workspace.
-  if (calendars.length === 0) return null
+  // An intentionally empty workspace is valid; damaged calendar records or
+  // orphaned events still require recovery.
+  if (calendars.length === 0 && (value.calendars.length > 0 || value.events.length > 0)) return null
   const calendarIds = new Set(calendars.map(calendar => calendar.id))
   // Tombstones for deleted provider events must survive a reload, or the
   // next snapshot merge resurrects the event before the delete is pushed.

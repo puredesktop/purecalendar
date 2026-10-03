@@ -360,10 +360,16 @@ export class GoogleCalendarProvider implements CalendarProvider {
   }
 
   private async listCalendars(): Promise<GoogleCalendarListItem[]> {
-    const payload = await this.request<{ items?: GoogleCalendarListItem[] }>(
-      '/users/me/calendarList',
-    )
-    return payload.items ?? []
+    const calendars: GoogleCalendarListItem[] = []
+    let pageToken: string | undefined
+    do {
+      const payload = await this.request<{ items?: GoogleCalendarListItem[]; nextPageToken?: string }>(
+        `/users/me/calendarList${pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : ''}`,
+      )
+      calendars.push(...(payload.items ?? []))
+      pageToken = payload.nextPageToken
+    } while (pageToken)
+    return calendars
   }
 
   /**
@@ -449,28 +455,30 @@ export class GoogleCalendarProvider implements CalendarProvider {
     const calendars = await this.resolveCalendars()
     const fallbackTimeZone = systemTimeZone()
 
-    const events: CalendarEvent[] = []
-    const failedCalendarIds: string[] = []
-    for (const calendar of calendars) {
-      let items: GoogleEvent[]
-      try {
-        items = await this.listCalendarEvents(calendar.id, timeMin, timeMax)
-      } catch {
-        // One unreadable calendar (revoked share, rate limit, blip) must
-        // not cost the user every other calendar's events — but it must
-        // be REPORTED, because the merge replaces provider events
-        // wholesale and would otherwise treat "we could not read it" as
-        // "it has no events" and drop what was already synced.
-        failedCalendarIds.push(calendar.id)
-        continue
-      }
-      for (const item of items) {
-        if (item.status === 'cancelled') continue
-        events.push(
-          calendarEventFromGoogle(calendar.id, item, fallbackTimeZone),
-        )
+    // Bounded read concurrency avoids a serial wait per calendar while keeping
+    // API pressure predictable and the resulting calendar/event order stable.
+    const snapshots: Array<{ events: CalendarEvent[]; failed: boolean }> = []
+    let cursor = 0
+    const readNext = async (): Promise<void> => {
+      while (cursor < calendars.length) {
+        const index = cursor++
+        const calendar = calendars[index]!
+        try {
+          const items = await this.listCalendarEvents(calendar.id, timeMin, timeMax)
+          snapshots[index] = {
+            events: items.filter(item => item.status !== 'cancelled').map(
+              item => calendarEventFromGoogle(calendar.id, item, fallbackTimeZone),
+            ),
+            failed: false,
+          }
+        } catch {
+          snapshots[index] = { events: [], failed: true }
+        }
       }
     }
+    await Promise.all(Array.from({ length: Math.min(4, calendars.length) }, readNext))
+    const events = snapshots.flatMap(snapshot => snapshot.events)
+    const failedCalendarIds = calendars.filter((_, index) => snapshots[index]?.failed).map(calendar => calendar.id)
 
     const account: CalendarAccount = {
       id: GOOGLE_ACCOUNT_ID,
@@ -548,7 +556,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
     )
     const events = await Promise.all(
       store.events.map(async event => {
-        if (event.syncState !== 'pending' || event.source !== 'provider') {
+        if (event.syncState !== 'pending' || event.source !== 'provider' || event.lifecycle === 'draft') {
           return event
         }
         if (

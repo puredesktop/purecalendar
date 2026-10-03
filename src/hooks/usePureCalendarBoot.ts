@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   fetchCalendarSettings,
   fetchGoogleAccessToken,
@@ -33,16 +33,16 @@ export interface PureCalendarBootState {
  * Merge a fresh Google snapshot into the persisted local store. Remote truth
  * wins for provider-sourced events (stale copies are replaced wholesale);
  * everything local (demo seeds, task blocks, drafts without a `g:` id, and
- * pending edits that have not pushed yet) survives.
+ * unsynced edits, including failed/conflicted pushes) survives.
  */
 export function mergeGoogleSnapshot(
   local: CalendarStore,
   remote: CalendarStore,
 ): CalendarStore {
-  const pendingLocal = local.events.filter(
-    event => event.source === 'provider' && event.syncState === 'pending',
+  const unsyncedLocal = local.events.filter(
+    event => event.source === 'provider' && event.syncState !== 'synced',
   )
-  const pendingIds = new Set(pendingLocal.map(event => event.id))
+  const pendingIds = new Set(unsyncedLocal.map(event => event.id))
   const nonProviderLocal = local.events.filter(
     event => event.source !== 'provider',
   )
@@ -53,7 +53,7 @@ export function mergeGoogleSnapshot(
     ? local.events.filter(
         event =>
           event.source === 'provider' &&
-          event.syncState !== 'pending' &&
+          event.syncState === 'synced' &&
           failedCalendarIds.has(event.calendarId),
       )
     : []
@@ -90,7 +90,7 @@ export function mergeGoogleSnapshot(
     ],
     events: [
       ...nonProviderLocal,
-      ...pendingLocal,
+      ...unsyncedLocal,
       ...keptFromFailedCalendars.filter(
         event => !removedCalendarIds.has(event.calendarId),
       ),
@@ -101,69 +101,34 @@ export function mergeGoogleSnapshot(
   }
 }
 
-async function loadPersistedStore(): Promise<CalendarStore> {
-  // The persisted store is the source of truth. The demo seed is only
-  // for a true first run — never a fallback that could overwrite real
-  // data (the PureSheets boot bug: blank model + live save target).
-  // A missing file resolves to null; a rejection here is a real read
-  // failure, so log it before falling through to the backup path.
-  const rawMain = await readCalendarStoreFile(CALENDAR_STORE_FILE).catch(
-    (error: unknown) => {
-      console.warn(
-        `[purecalendar] failed to read store file "${CALENDAR_STORE_FILE}"; trying backup:`,
-        error,
-      )
-      return null
-    },
+export async function loadPersistedStore(): Promise<CalendarStore> {
+  // Missing files are a first run. Failed reads or invalid files are not.
+  const main = await readCalendarStoreFile(CALENDAR_STORE_FILE).then(
+    value => ({ value, failed: false }),
+    () => ({ value: null, failed: true }),
   )
-  let nextStore = parsePersistedCalendarStore(rawMain)
-  if (!nextStore) {
-    const rawBackup = await readCalendarStoreFile(
-      CALENDAR_STORE_BACKUP_FILE,
-    ).catch((error: unknown) => {
-      console.warn(
-        `[purecalendar] failed to read backup store file "${CALENDAR_STORE_BACKUP_FILE}":`,
-        error,
-      )
-      return null
-    })
-    nextStore = parsePersistedCalendarStore(rawBackup)
-    if (rawMain !== null && nextStore) {
-      // Main file existed but was unreadable and the backup saved us.
-      // Preserve the corrupt blob for post-mortem before autosave
-      // rewrites the main file with the recovered contents.
-      void writeCalendarStoreFile(CALENDAR_STORE_CORRUPT_FILE, rawMain).catch(
-        (error: unknown) => {
-          console.warn(
-            `[purecalendar] could not preserve corrupt store blob to "${CALENDAR_STORE_CORRUPT_FILE}" (recovered from backup anyway):`,
-            error,
-          )
-        },
-      )
+  const parsed = parsePersistedCalendarStore(main.value)
+  if (parsed) return parsed
+  const backup = await readCalendarStoreFile(CALENDAR_STORE_BACKUP_FILE).then(
+    value => ({ value, failed: false }),
+    () => ({ value: null, failed: true }),
+  )
+  const recovered = parsePersistedCalendarStore(backup.value)
+  if (recovered) {
+    if (main.value !== null) {
+      await writeCalendarStoreFile(CALENDAR_STORE_CORRUPT_FILE, main.value)
     }
+    return recovered
   }
-  if (!nextStore) {
-    if (rawMain !== null) {
-      // Both main and backup unreadable: keep the evidence, then start
-      // fresh — the alternative is an unusable app.
-      console.warn(
-        '[purecalendar] main and backup store files were both unreadable; preserving the corrupt blob and starting from the demo seed',
-      )
-      void writeCalendarStoreFile(CALENDAR_STORE_CORRUPT_FILE, rawMain).catch(
-        (error: unknown) => {
-          console.warn(
-            `[purecalendar] could not preserve corrupt store blob to "${CALENDAR_STORE_CORRUPT_FILE}":`,
-            error,
-          )
-        },
-      )
-    }
-    nextStore = demoCalendarStore()
+  if (main.failed || backup.failed || main.value !== null || backup.value !== null) {
+    throw new Error('Saved calendar data could not be read. Your files have been kept. Try again, or restore a valid calendar backup.')
   }
-  return nextStore
+  return demoCalendarStore()
 }
 
-export function usePureCalendarBoot(ready: boolean): PureCalendarBootState {
+export function usePureCalendarBoot(ready: boolean): PureCalendarBootState & { retryBoot: () => void } {
+  const [attempt, setAttempt] = useState(0)
+  const retryBoot = useCallback(() => setAttempt(value => value + 1), [])
   const [state, setState] = useState<PureCalendarBootState>({
     store: null,
     calendarProvider: null,
@@ -173,6 +138,7 @@ export function usePureCalendarBoot(ready: boolean): PureCalendarBootState {
   useEffect(() => {
     if (!ready) return
     let cancelled = false
+    setState({ store: null, calendarProvider: null, bootError: null })
     async function load(): Promise<void> {
       try {
         // App settings (viewMode, working hours, timezone) are persisted
@@ -257,7 +223,7 @@ export function usePureCalendarBoot(ready: boolean): PureCalendarBootState {
     return () => {
       cancelled = true
     }
-  }, [ready])
+  }, [ready, attempt])
 
-  return state
+  return { ...state, retryBoot }
 }

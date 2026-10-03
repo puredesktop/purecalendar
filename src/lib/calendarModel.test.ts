@@ -1,3 +1,4 @@
+import { calendarFixture as demoCalendarStore } from '../test/calendarFixtures'
 import { describe, expect, it } from 'vitest'
 import {
   allDayEventsInRange,
@@ -12,7 +13,6 @@ import {
   createEventFromCalendarInviteIntent,
   dateTimeLocalToIsoInTimeZone,
   dateTimeLocalValueInTimeZone,
-  demoCalendarStore,
   clearDemoData,
   duplicateEvent,
   eventsInRange,

@@ -168,6 +168,7 @@ export interface CalendarStore {
 
 export interface CalendarProvider {
   fetchStore(): Promise<CalendarStore>
+  /** Preserve input event order, including unchanged local entries, so push acknowledgements can be reconciled. */
   sync(store: CalendarStore): Promise<CalendarStore>
   createEvent(event: CalendarEvent): Promise<CalendarEvent>
   updateEvent(event: CalendarEvent): Promise<CalendarEvent>
