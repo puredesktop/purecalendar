@@ -127,8 +127,8 @@ export function meetingUrlIn(text: string): string | null {
         (/(^|\.)zoom\.us$/.test(url.hostname) &&
           /^\/(j|my)\//.test(url.pathname)) ||
         url.hostname === 'meet.google.com' ||
-        (url.hostname === 'teams.microsoft.com' &&
-          url.pathname.startsWith('/l/meetup-join'))
+        (['teams.microsoft.com', 'teams.live.com'].includes(url.hostname) &&
+          (url.pathname.startsWith('/l/meetup-join') || url.pathname.startsWith('/meet/')))
       )
         return url.href
     } catch {
@@ -147,4 +147,15 @@ export function eventLinkLabel(segment: TextSegment): string {
   } catch {
     return segment.value
   }
+}
+
+/** Explicit conference destinations may use any conferencing service. */
+export function eventMeetingUrl(event: { conferenceLink?: string; description: string; location?: string }): string | null {
+  if (event.conferenceLink?.trim()) {
+    try {
+      const url = new URL(event.conferenceLink.trim())
+      if (url.protocol === 'https:' || url.protocol === 'http:') return url.href
+    } catch { /* Fall back to links embedded in the invitation. */ }
+  }
+  return meetingUrlIn(event.description) || meetingUrlIn(event.location ?? '')
 }

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { styled } from 'styled-components'
 import { X } from 'lucide-react'
+import { EventSurfaceTitle } from './EventSurfaceTitle'
 import {
   bridge,
   PLATFORM_BRIDGE_METHODS,
@@ -36,7 +37,7 @@ import { PlatformIcon } from '@purescience/platform-ui/components/chrome/Platfor
 import { SegmentedControl } from '@purescience/platform-ui/components/common/buttons/SegmentedControl'
 import { Badge } from '@purescience/platform-ui/components/common/feedback/Badge'
 import { openExternalUrl } from '@purescience/platform-ui/bridge/os.mjs'
-import { meetingUrlIn, eventDescriptionSegments, eventLinkLabel } from '../lib/eventLinks'
+import { eventMeetingUrl, eventDescriptionSegments, eventLinkLabel } from '../lib/eventLinks'
 import { EmptyState } from '@purescience/platform-ui/components/common/feedback/EmptyState'
 import { generateIcsEventExport } from '@purescience/platform-ui/ics/generateIcs'
 import {
@@ -822,7 +823,7 @@ function EventReadBody({
   const repeat = event.recurrenceRule
     ? `Repeats ${event.recurrenceRule.interval && event.recurrenceRule.interval > 1 ? `every ${event.recurrenceRule.interval} ` : ''}${event.recurrenceRule.frequency}`
     : null
-  const joinUrl = meetingUrlIn(event.conferenceLink ?? '') || meetingUrlIn(event.description)
+  const joinUrl = eventMeetingUrl(event)
   const reminder = formatEventReminderMinutes(event.reminders)
   const attendees = event.attendees
     .map(attendee => attendee.name || attendee.email)
@@ -4509,7 +4510,7 @@ export function PureCalendarShell({
                   setDetailsOpen(true)
                 }}
               >
-                <strong>{event.title}</strong>
+                <EventSurfaceTitle event={event} />
                 <div>
                   {isDraftEvent(event) ? 'Draft · ' : ''}
                   {dayLabel(new Date(event.startsAt), displayTimeZone)} ·{' '}
@@ -4595,7 +4596,7 @@ export function PureCalendarShell({
                           setDetailsOpen(true)
                         }}
                       >
-                        <strong>{event.title}</strong>
+                        <EventSurfaceTitle event={event} />
                         <div>
                           {isDraftEvent(event) ? 'Draft · ' : ''}
                           {formatTime(event.startsAt, displayTimeZone)} to{' '}
@@ -4692,7 +4693,7 @@ export function PureCalendarShell({
                       setDetailsOpen(true)
                     }}
                   >
-                    {isDraftEvent(event) ? `Draft · ${event.title}` : event.title}
+                    <EventSurfaceTitle event={event} draftPrefix={isDraftEvent(event)} />
                   </AllDayItem>
                 )
               })}
@@ -4834,7 +4835,7 @@ export function PureCalendarShell({
                           }
                         />
                       )}
-                      <strong>{event.title}</strong>
+                      <EventSurfaceTitle event={event} />
                       <div>
                         {isDraftEvent(event) ? 'Draft · ' : ''}
                         {formatTime(event.startsAt, displayTimeZone)} to{' '}
