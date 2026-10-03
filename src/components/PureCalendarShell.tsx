@@ -2768,6 +2768,9 @@ export function PureCalendarShell({
   // Only events whose content is unchanged since the push are replaced with
   // the synced result — an edit racing the push simply stays pending and is
   // picked up by the next round.
+  const [refreshing, setRefreshing] = useState(false)
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
   const googleSyncInFlightRef = useRef(false)
   useEffect(() => {
     if (!calendarProvider) return
@@ -2782,6 +2785,7 @@ export function PureCalendarShell({
     if (!hasPending && !hasTombstones) return
     const pushed = store
     const timeout = window.setTimeout(() => {
+      if (googleSyncInFlightRef.current) return
       googleSyncInFlightRef.current = true
       void calendarProvider
         .sync(pushed)
@@ -2833,15 +2837,12 @@ export function PureCalendarShell({
         })
     }, 1200)
     return () => window.clearTimeout(timeout)
-  }, [store, calendarProvider])
+  }, [store, calendarProvider, refreshing])
 
-  // Pull a fresh snapshot from Google and merge it in. Boot does this once;
+  // Pull a fresh snapshot from Google and merge it into the current store;
   // without a periodic + manual refresh a day-long session silently drifts
   // stale. mergeGoogleSnapshot keeps pending local edits, so a refresh mid-
   // edit never clobbers unsynced work.
-  const [refreshing, setRefreshing] = useState(false)
-  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null)
-  const [refreshError, setRefreshError] = useState<string | null>(null)
   const refreshFromProvider = useCallback(async (): Promise<void> => {
     if (!calendarProvider) return
     // Mutually exclusive with the debounced push so the two never race on
@@ -2863,6 +2864,12 @@ export function PureCalendarShell({
       setRefreshing(false)
     }
   }, [calendarProvider])
+
+  // Start the first pull only after the saved workspace has mounted. Slow
+  // authentication/network requests never hold the calendar behind loading.
+  useEffect(() => {
+    void refreshFromProvider()
+  }, [refreshFromProvider])
 
   // Fetch subscribed ICS feeds (holidays, team calendars) and mirror them as
   // read-only calendars. The setting existed but was never fetched. Feeds are

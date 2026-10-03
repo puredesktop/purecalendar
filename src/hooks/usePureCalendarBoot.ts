@@ -175,51 +175,53 @@ export function usePureCalendarBoot(ready: boolean): PureCalendarBootState {
     let cancelled = false
     async function load(): Promise<void> {
       try {
-        let nextStore = await loadPersistedStore()
         // App settings (viewMode, working hours, timezone) are persisted
         // separately; hydrate them over whatever the store carries so saved
         // preferences survive reload.
-        const settings = await fetchCalendarSettings().catch(
-          (error: unknown) => {
-            console.warn(
-              '[purecalendar] failed to read app settings; using store defaults:',
-              error,
-            )
-            return {}
-          },
-        )
-        nextStore = {
-          ...nextStore,
-          settings: { ...nextStore.settings, ...settings },
+        const [persistedStore, settings] = await Promise.all([
+          loadPersistedStore(),
+          fetchCalendarSettings().catch(
+            (error: unknown) => {
+              console.warn(
+                '[purecalendar] failed to read app settings; using store defaults:',
+                error,
+              )
+              return {}
+            },
+          ),
+        ])
+        const nextStore = {
+          ...persistedStore,
+          settings: { ...persistedStore.settings, ...settings },
         }
+
+        // Open the saved workspace before checking credentials or contacting
+        // Google. The mounted calendar owns background refresh and merges into
+        // its current store, so edits made while a slow sync runs are retained.
+        if (cancelled) return
+        // Seed the fetch-time preferences from what was persisted, so
+        // the very first sync already honours added/removed calendars;
+        // the shell keeps them current from there.
+        setGoogleCalendarPreferences({
+          extraCalendarIds: nextStore.settings.googleExtraCalendarIds,
+          removedCalendarIds: nextStore.settings.removedCalendarIds,
+        })
+        setState({ store: nextStore, calendarProvider: null, bootError: null })
 
         const credentialStatus = await fetchGoogleCredentialStatus().catch(
           (error: unknown) => {
             console.warn(
-              '[purecalendar] failed to read google credential status; booting with demo provider:',
+              '[purecalendar] failed to read google credential status; showing saved events:',
               error,
             )
             return null
           },
         )
+        if (cancelled) return
         let calendarProvider: CalendarProvider | null = null
         let notice: string | undefined
         if (credentialStatus?.connected) {
-          // Seed the fetch-time preferences from what was persisted, so
-          // the very first sync already honours added/removed calendars;
-          // the shell keeps them current from there.
-          setGoogleCalendarPreferences({
-            ...(nextStore.settings.googleExtraCalendarIds
-              ? {
-                  extraCalendarIds:
-                    nextStore.settings.googleExtraCalendarIds,
-                }
-              : {}),
-            ...(nextStore.settings.removedCalendarIds
-              ? { removedCalendarIds: nextStore.settings.removedCalendarIds }
-              : {}),
-          })
-          const googleProvider = new GoogleCalendarProvider({
+          calendarProvider = new GoogleCalendarProvider({
             ...(credentialStatus.email
               ? { email: credentialStatus.email }
               : {}),
@@ -229,35 +231,18 @@ export function usePureCalendarBoot(ready: boolean): PureCalendarBootState {
             extraCalendarIds: googleExtraCalendarIds,
             removedCalendarIds: googleRemovedCalendarIds,
           })
-          try {
-            const remote = await googleProvider.fetchStore()
-            nextStore = mergeGoogleSnapshot(nextStore, remote)
-            calendarProvider = googleProvider
-          } catch (error) {
-            // A connected account whose startup sync failed must stay on the
-            // Google provider so the next sync retries — mirror PureMail's
-            // boot resilience rather than silently dropping to demo data.
-            calendarProvider = googleProvider
-            const message =
-              error instanceof Error ? error.message : String(error)
-            console.warn(
-              '[purecalendar] google boot sync failed; will retry:',
-              message,
-            )
-            notice = `Google Calendar was unreachable at startup; showing your last synced events. (${message})`
-          }
         } else if (credentialStatus?.needsReconnect) {
           notice =
             'Google access expired or was revoked. Reconnect in Calendar settings → Calendar connections.'
         }
 
         if (cancelled) return
-        setState({
-          store: nextStore,
+        setState(current => ({
+          ...current,
           calendarProvider,
           ...(notice ? { notice } : {}),
           bootError: null,
-        })
+        }))
       } catch (error) {
         if (cancelled) return
         setState({
