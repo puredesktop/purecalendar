@@ -1,3 +1,4 @@
+import { calendarFixture } from '../test/calendarFixtures'
 import { describe, expect, it, vi } from 'vitest'
 import type { CalendarEvent } from '../types'
 import {
@@ -994,5 +995,70 @@ describe('multiple calendars', () => {
     expect(store.events.map(event => event.calendarId)).toEqual([
       'primary-cal',
     ])
+  })
+})
+
+
+describe('Google calendar read performance and private drafts', () => {
+  it('includes calendars beyond the first list page', async () => {
+    const { provider, fetch } = providerWith(request => {
+      const url = new URL(request.url)
+      if (url.pathname.endsWith('/calendarList')) {
+        return jsonResponse(url.searchParams.get('pageToken') === 'next page'
+          ? { items: [{ id: 'later', summary: 'Later calendar' }] }
+          : { items: [{ id: 'first' }], nextPageToken: 'next page' })
+      }
+      return jsonResponse({ items: [TIMED_EVENT] })
+    })
+    const store = await provider.fetchStore()
+    expect(store.calendars.map(calendar => calendar.id)).toEqual(['first', 'later'])
+    expect(store.events.map(event => event.calendarId)).toEqual(['first', 'later'])
+    expect(fetch.mock.calls.some(([request]) => new URL(request.url).searchParams.get('pageToken') === 'next page')).toBe(true)
+  })
+
+  it('reads at most four calendars concurrently and retains list order when responses arrive out of order', async () => {
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f']
+    const waiting = new Map<string, () => void>()
+    let active = 0
+    let peak = 0
+    const { provider } = providerWith(async request => {
+      const url = new URL(request.url)
+      if (url.pathname.endsWith('/calendarList')) return jsonResponse({ items: ids.map(id => ({ id })) })
+      const id = url.pathname.split('/').at(-2)!
+      active++
+      peak = Math.max(peak, active)
+      await new Promise<void>(resolve => waiting.set(id, resolve))
+      active--
+      return jsonResponse({ items: [{ ...TIMED_EVENT, id: `event-${id}` }] })
+    })
+    const pulling = provider.fetchStore()
+    await vi.waitFor(() => expect(waiting.size).toBe(4))
+    expect([...waiting.keys()]).toEqual(ids.slice(0, 4))
+    waiting.get('d')!()
+    await vi.waitFor(() => expect(waiting.has('e')).toBe(true))
+    waiting.get('b')!()
+    await vi.waitFor(() => expect(waiting.has('f')).toBe(true))
+    for (const release of waiting.values()) release()
+    const store = await pulling
+    expect(peak).toBe(4)
+    expect(store.events.map(event => event.calendarId)).toEqual(ids)
+  })
+
+  it('never uploads a private draft, but creates it with attendees once activated', async () => {
+    const { provider, fetch } = providerWith(request => {
+      expect(request.method).toBe('POST')
+      expect(JSON.parse(request.body!).attendees).toHaveLength(1)
+      return jsonResponse(TIMED_EVENT)
+    })
+    const store = calendarFixture()
+    store.calendars[0]!.sourceId = 'google-source'
+    store.events = [{ ...store.events[0]!, source: 'provider', syncState: 'pending', lifecycle: 'draft' }]
+    const privateStore = await provider.sync(store)
+    expect(fetch).not.toHaveBeenCalled()
+    expect(privateStore.events[0]?.lifecycle).toBe('draft')
+    store.events = [{ ...store.events[0]!, lifecycle: 'active' }]
+    const activated = await provider.sync(store)
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(activated.events[0]?.syncState).toBe('synced')
   })
 })

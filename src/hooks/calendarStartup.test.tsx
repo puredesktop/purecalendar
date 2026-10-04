@@ -6,6 +6,7 @@ import {
   fetchCalendarSettings,
   fetchGoogleCredentialStatus,
   readCalendarStoreFile,
+  writeCalendarStoreFile,
   type OAuthCredentialStatus,
 } from '../bridge/platformBridge'
 import { demoCalendarStore } from '../lib/calendarModel'
@@ -42,7 +43,7 @@ const connected: OAuthCredentialStatus = {
 
 let root: Root | null
 let host: HTMLDivElement
-let state: PureCalendarBootState
+let state: PureCalendarBootState & { retryBoot: () => void }
 
 function Probe() {
   state = usePureCalendarBoot(true)
@@ -70,6 +71,41 @@ afterEach(async () => {
 })
 
 describe('calendar startup', () => {
+  it('does not mount an empty writable workspace when saved files cannot be read, and can retry', async () => {
+    vi.mocked(readCalendarStoreFile).mockRejectedValue(new Error('Disk unavailable'))
+    await mount()
+    expect(state.store).toBeNull()
+    expect(state.bootError?.message).toContain('Your files have been kept')
+    expect(writeCalendarStoreFile).not.toHaveBeenCalled()
+    vi.mocked(readCalendarStoreFile).mockResolvedValue(saved)
+    await act(async () => state.retryBoot())
+    expect(state.store?.events[0]?.title).toBe('Saved meeting')
+    expect(state.bootError).toBeNull()
+  })
+
+  it('keeps malformed files untouched when neither copy can be recovered', async () => {
+    vi.mocked(readCalendarStoreFile).mockResolvedValue({ invalid: true })
+    await mount()
+    expect(state.store).toBeNull()
+    expect(state.bootError).not.toBeNull()
+    expect(writeCalendarStoreFile).not.toHaveBeenCalled()
+  })
+
+  it('recovers the backup and preserves a malformed main before exposing writable data', async () => {
+    vi.mocked(readCalendarStoreFile).mockImplementation(async name => name === 'calendar-store.json' ? { invalid: true } : saved)
+    vi.mocked(writeCalendarStoreFile).mockResolvedValue(undefined)
+    await mount()
+    expect(writeCalendarStoreFile).toHaveBeenCalledWith('calendar-store.corrupt.json', { invalid: true })
+    expect(state.store?.events[0]?.title).toBe('Saved meeting')
+  })
+
+  it('opens an empty workspace only when both saved files are missing', async () => {
+    vi.mocked(readCalendarStoreFile).mockResolvedValue(null)
+    await mount()
+    expect(state.store?.events).toEqual([])
+    expect(state.bootError).toBeNull()
+  })
+
   it('shows saved events and settings while credential lookup is stalled', async () => {
     await mount()
     expect(host.textContent).toBe('Saved meeting')
@@ -129,7 +165,7 @@ describe('calendar startup', () => {
     await act(async () => root!.unmount())
     root = null
     await act(async () => resolveStatus(connected))
-    expect(state).toBe(displayedState)
+    expect(state.store).toBe(displayedState.store)
     expect(state.calendarProvider).toBeNull()
   })
 })

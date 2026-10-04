@@ -1,3 +1,4 @@
+import { calendarFixture as demoCalendarStore } from '../test/calendarFixtures'
 /**
  * Regression tests for the PureCalendar data-integrity fixes (issue #175
  * sweep):
@@ -19,10 +20,10 @@ import {
   allDayEventPatch,
   createDraftEvent,
   createEventFromCalendarInviteIntent,
-  demoCalendarStore,
   eventsInRange,
   expandRecurringEvent,
   upsertInviteEvent,
+  rsvpEvent,
 } from './calendarModel'
 import { parsePersistedCalendarStore } from './calendarStorePersistence'
 import type { CalendarEvent } from '../types'
@@ -65,6 +66,22 @@ const inviteIntent = {
 // ---------------------------------------------------------------------------
 
 describe('parsePersistedCalendarStore', () => {
+  it('accepts an intentionally empty workspace without injecting samples', () => {
+    const parsed = parsePersistedCalendarStore({ accounts: [], calendars: [], events: [], tasks: [], settings: {} })
+    expect(parsed?.events).toEqual([])
+    expect(parsed?.calendars).toEqual([])
+  })
+
+  it('retains task calendar membership and added/removed subscriptions', () => {
+    const store = demoCalendarStore()
+    store.settings.googleExtraCalendarIds = ['shared', 'shared']
+    store.settings.removedCalendarIds = ['removed']
+    const parsed = parsePersistedCalendarStore(store)
+    expect(parsed?.tasks[0]?.calendarId).toBe('cal_focus')
+    expect(parsed?.settings.googleExtraCalendarIds).toEqual(['shared'])
+    expect(parsed?.settings.removedCalendarIds).toEqual(['removed'])
+  })
+
   it('round-trips a real store', () => {
     const store = demoCalendarStore()
     const parsed = parsePersistedCalendarStore(
@@ -101,7 +118,7 @@ describe('parsePersistedCalendarStore', () => {
     expect(parsePersistedCalendarStore('garbage')).toBeNull()
     expect(parsePersistedCalendarStore({})).toBeNull()
     expect(
-      parsePersistedCalendarStore({ events: [], calendars: [], accounts: [] }),
+      parsePersistedCalendarStore({ events: [{ id: 'orphan' }], calendars: [], accounts: [] }),
     ).toBeNull() // no calendars -> cannot hold events, treat as corrupt
   })
 
@@ -154,7 +171,9 @@ describe('parsePersistedCalendarStore', () => {
 describe('upsertInviteEvent RSVP preservation', () => {
   it('keeps a locally-recorded acceptance when the same sequence is re-processed', () => {
     const base = demoCalendarStore()
-    const first = upsertInviteEvent(base, inviteIntent, 'cal_work', 'accepted')
+    const received = upsertInviteEvent(base, inviteIntent, 'cal_work')
+    const accepted = rsvpEvent(received.event, 'accepted', 'alex@example.com')
+    const first = { event: accepted, store: { ...received.store, events: received.store.events.map(event => event.id === accepted.id ? accepted : event) } }
     expect(first.event.attendees[0]?.response).toBe('accepted')
 
     // Same invite arrives again (same uid, SAME sequence), no response info.
@@ -164,7 +183,9 @@ describe('upsertInviteEvent RSVP preservation', () => {
 
   it('lets a genuine incoming response update the attendee', () => {
     const base = demoCalendarStore()
-    const first = upsertInviteEvent(base, inviteIntent, 'cal_work', 'accepted')
+    const received = upsertInviteEvent(base, inviteIntent, 'cal_work')
+    const accepted = rsvpEvent(received.event, 'accepted', 'alex@example.com')
+    const first = { event: accepted, store: { ...received.store, events: received.store.events.map(event => event.id === accepted.id ? accepted : event) } }
     const declinedIntent = {
       ...inviteIntent,
       sequence: 3,
@@ -187,7 +208,9 @@ describe('upsertInviteEvent RSVP preservation', () => {
 
   it('still ignores an invite older than the stored sequence', () => {
     const base = demoCalendarStore()
-    const first = upsertInviteEvent(base, inviteIntent, 'cal_work', 'accepted')
+    const received = upsertInviteEvent(base, inviteIntent, 'cal_work')
+    const accepted = rsvpEvent(received.event, 'accepted', 'alex@example.com')
+    const first = { event: accepted, store: { ...received.store, events: received.store.events.map(event => event.id === accepted.id ? accepted : event) } }
     const stale = { ...inviteIntent, sequence: 1, title: 'Old title' }
     const second = upsertInviteEvent(first.store, stale, 'cal_work')
     expect(second.event.title).toBe('Review meeting')
