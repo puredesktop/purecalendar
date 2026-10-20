@@ -13,6 +13,7 @@ import {
   allDayEventPatch,
   createDraftEvent,
   firstEditableCalendarId,
+  ensureLocalCalendar,
   resolveAgentEventTime,
   isDraftEvent,
   moveEvent,
@@ -209,12 +210,16 @@ const createCalendarDraft: AgentToolHandler = async invoke => {
   }
 
   try {
-    const store = requireStore()
-    const calendarId =
+    let store = requireStore()
+    let calendarId =
       readAgentToolStringArg(invoke.arguments, 'calendarId') ||
       firstEditableCalendarId(store)
     if (!calendarId) {
-      return agentToolErrorContent('No editable calendar is available.')
+      // Nothing to write to (no account connected): the calendar on this computer.
+      const ensured = ensureLocalCalendar(store)
+      commitStore(store, current => ensureLocalCalendar(current).store)
+      store = ensured.store
+      calendarId = ensured.calendarId
     }
     const timeZone =
       readAgentToolStringArg(invoke.arguments, 'timeZone') || undefined
