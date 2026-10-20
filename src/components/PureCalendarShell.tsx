@@ -84,6 +84,8 @@ import {
   formatEventAttendeesText,
   formatEventReminderMinutes,
   firstEditableCalendarId,
+  ensureLocalCalendar,
+  isLocalCalendar,
   formatTimeInTimeZone,
   instantFromZonedWallTime,
   isAvailableWallTime,
@@ -2456,6 +2458,12 @@ export function PureCalendarShell({
   const [store, setStore] = useState(initialStore)
   const latestStoreRef = useRef(store)
   latestStoreRef.current = store
+  // Always somewhere to put an event: with no calendar that can be written to (no account connected), the one on this
+  // computer is made.
+  const nothingEditable = editableCalendars(store).length === 0
+  useEffect(() => {
+    if (nothingEditable) setStore(current => ensureLocalCalendar(current).store)
+  }, [nothingEditable])
   const [view, setView] = useState<CalendarView>(
     initialStore.settings.viewMode ?? 'week',
   )
@@ -4356,7 +4364,7 @@ export function PureCalendarShell({
                   setDetailsOpen(true)
                 }}
               >
-                <EventSurfaceTitle event={event} />
+                <EventSurfaceTitle event={event} local={isLocalCalendar(store, event.calendarId)} />
                 <div>
                   {isDraftEvent(event) ? 'Draft · ' : ''}
                   {dayLabel(new Date(event.startsAt), displayTimeZone)} ·{' '}
@@ -4443,7 +4451,7 @@ export function PureCalendarShell({
                           setDetailsOpen(true)
                         }}
                       >
-                        <EventSurfaceTitle event={event} />
+                        <EventSurfaceTitle event={event} local={isLocalCalendar(store, event.calendarId)} />
                         <div>
                           {isDraftEvent(event) ? 'Draft · ' : ''}
                           {formatTime(event.startsAt, displayTimeZone)} to{' '}
@@ -4541,7 +4549,7 @@ export function PureCalendarShell({
                       setDetailsOpen(true)
                     }}
                   >
-                    <EventSurfaceTitle event={event} draftPrefix={isDraftEvent(event)} />
+                    <EventSurfaceTitle event={event} draftPrefix={isDraftEvent(event)} local={isLocalCalendar(store, event.calendarId)} />
                   </AllDayItem>
                 )
               })}
@@ -4684,7 +4692,7 @@ export function PureCalendarShell({
                           }
                         />
                       )}
-                      <EventSurfaceTitle event={event} />
+                      <EventSurfaceTitle event={event} local={isLocalCalendar(store, event.calendarId)} />
                       <div>
                         {isDraftEvent(event) ? 'Draft · ' : ''}
                         {formatTime(event.startsAt, displayTimeZone)} to{' '}

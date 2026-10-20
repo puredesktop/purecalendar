@@ -981,11 +981,46 @@ export function editableCalendars(
 }
 
 export function firstEditableCalendarId(store: CalendarStore): string {
+  // A connected calendar first: the one on this computer is the fallback when there is nothing else to write to.
+  const editable = editableCalendars(store)
+  const connected = editable.filter(calendar => calendar.id !== LOCAL_CALENDAR_ID)
   return (
-    editableCalendars(store).find(calendar => calendar.visible)?.id ??
-    editableCalendars(store)[0]?.id ??
+    connected.find(calendar => calendar.visible)?.id ??
+    connected[0]?.id ??
+    editable.find(calendar => calendar.visible)?.id ??
+    editable[0]?.id ??
     ''
   )
+}
+
+const LOCAL_ACCOUNT_ID = 'acct_on_this_computer'
+const LOCAL_DEVICE_SOURCE_ID = 'src_on_this_computer'
+export const LOCAL_CALENDAR_ID = 'cal_on_this_computer'
+
+/**
+ * A calendar on this computer, so there is always somewhere to put an event: made when the store has no calendar
+ * that can be written to (no account connected, or only read-only ones). Like Mail invites its provider is 'local',
+ * so it survives connecting an account; a connected calendar then becomes the default.
+ */
+export function ensureLocalCalendar(store: CalendarStore): { store: CalendarStore; calendarId: string } {
+  if (store.calendars.some(item => item.id === LOCAL_CALENDAR_ID)) return { store, calendarId: LOCAL_CALENDAR_ID }
+  return {
+    store: {
+      ...store,
+      accounts: [...store.accounts, { id: LOCAL_ACCOUNT_ID, provider: 'local', name: 'On this computer', email: '' }],
+      sources: [...store.sources, { id: LOCAL_DEVICE_SOURCE_ID, accountId: LOCAL_ACCOUNT_ID, name: 'On this computer', syncState: 'online' }],
+      calendars: [...store.calendars, { id: LOCAL_CALENDAR_ID, sourceId: LOCAL_DEVICE_SOURCE_ID, name: 'My calendar', color: '#4f8f6b', visible: true }],
+    },
+    calendarId: LOCAL_CALENDAR_ID,
+  }
+}
+
+/** Whether a calendar lives only on this computer (its account is local): its events are not on any network. */
+export function isLocalCalendar(store: Pick<CalendarStore, 'calendars' | 'sources' | 'accounts'>, calendarId: string): boolean {
+  const calendar = store.calendars.find(item => item.id === calendarId)
+  const source = calendar ? store.sources.find(item => item.id === calendar.sourceId) : undefined
+  const account = source ? store.accounts.find(item => item.id === source.accountId) : undefined
+  return account?.provider === 'local'
 }
 
 const MAIL_INVITE_ACCOUNT_ID = 'acct_mail_invites'
