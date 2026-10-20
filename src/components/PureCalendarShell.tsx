@@ -4987,7 +4987,11 @@ export function PureCalendarShell({
             </div>
           </Section>
         )}
-        <CalendarViewport ref={calendarViewportRef}>
+        <CalendarViewport
+          ref={calendarViewportRef}
+          data-agent-ref="@open"
+          data-agent-label="Calendar"
+        >
           {renderEvents()}
         </CalendarViewport>
         <StatusBand aria-live="polite">
