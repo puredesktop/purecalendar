@@ -146,6 +146,7 @@ import type {
   EventStatus,
   RecurrenceRule,
 } from '../types'
+import { calendarRefs, eventRefs } from '../lib/agentRefs'
 
 interface PendingCalendarDraft {
   intent: CalendarDraftIntent
@@ -4346,6 +4347,7 @@ export function PureCalendarShell({
             return (
               <AgendaRow
                 key={event.id}
+                {...eventRefs(event)}
                 $color={calendarCategoryColor(calendar)}
                 $draft={isDraftEvent(event)}
                 onClick={() => {
@@ -4431,6 +4433,7 @@ export function PureCalendarShell({
                     return (
                       <MonthItem
                         key={event.id}
+                        {...eventRefs(event)}
                         $color={calendarCategoryColor(calendar)}
                         $draft={isDraftEvent(event)}
                         onClick={click => {
@@ -4528,6 +4531,7 @@ export function PureCalendarShell({
                 return (
                   <AllDayItem
                     key={event.id}
+                    {...eventRefs(event)}
                     $color={calendarCategoryColor(calendar)}
                     $draft={isDraftEvent(event)}
                     onClick={() => {
@@ -4649,6 +4653,7 @@ export function PureCalendarShell({
                   return (
                     <TimedEventBlock
                       key={event.id}
+                      {...eventRefs(event)}
                       data-calendar-event
                       aria-pressed={selected}
                       $color={calendarCategoryColor(calendar)}
@@ -5048,7 +5053,7 @@ export function PureCalendarShell({
             <Section>
               <Kicker>Calendars</Kicker>
               {store.calendars.map(calendar => (
-                <CalendarManageRow key={calendar.id}>
+                <CalendarManageRow key={calendar.id} {...calendarRefs(calendar)}>
                   <CalendarToggle
                     type="button"
                     role="switch"
@@ -5664,7 +5669,11 @@ export function PureCalendarShell({
               </DetailsHeaderActions>
             </DetailsOverlayHeader>
             <DetailsOverlayBody>
-              <DetailsPanel>
+              <DetailsPanel
+                {...(!pendingInvite && !selectedTask && selectedEvent
+                  ? eventRefs(selectedEvent)
+                  : {})}
+              >
                 {persistFailure && (
                   <ErrorNote role="alert">
                     Changes could not be saved. {persistFailure} Try Save again.
