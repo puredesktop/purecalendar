@@ -530,7 +530,11 @@ export class GoogleCalendarProvider implements CalendarProvider {
     const tombstones = store.removedEventIds ?? []
     const unconfirmedTombstones: string[] = []
     for (const eventId of tombstones) {
-      if (!parseGoogleEventLocalId(eventId)) continue
+      if (!parseGoogleEventLocalId(eventId)) {
+        // The team calendar's (`t:`): kept, for that account to send. Anything else has no copy anywhere.
+        if (eventId.startsWith('t:')) unconfirmedTombstones.push(eventId)
+        continue
+      }
       try {
         await this.deleteEvent(eventId)
       } catch (error) {

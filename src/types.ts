@@ -36,7 +36,7 @@ export interface CalendarSettings {
 
 export interface CalendarAccount {
   id: string
-  provider: 'demo' | 'google' | 'caldav' | 'local'
+  provider: 'demo' | 'google' | 'caldav' | 'local' | 'team'
   name: string
   email: string
 }
@@ -124,6 +124,21 @@ export interface CalendarEvent {
   recurrenceRule?: RecurrenceRule
   source: 'demo' | 'provider' | 'task' | 'feed'
   syncState: SyncState
+  /**
+   * On a team calendar (the organisation's, kept on its server): a meeting
+   * booked with teammates or an important date, the server's revision of it,
+   * and whether this person may change it. Attendees there are teammates,
+   * each with a `<person id>@team.invalid` address (lib/teamCalendar.ts).
+   */
+  team?: TeamEventFacts
+}
+
+export interface TeamEventFacts {
+  kind: 'meeting' | 'date'
+  revision: number
+  mayEdit: boolean
+  /** Why the server refused the last change, said to the person. */
+  problem?: string
 }
 
 export interface CalendarTask {

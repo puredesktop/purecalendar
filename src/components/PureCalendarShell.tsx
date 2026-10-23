@@ -55,6 +55,9 @@ import {
   type OAuthCredentialStatus,
 } from '../bridge/platformBridge'
 import { mergeGoogleSnapshot } from '../hooks/usePureCalendarBoot'
+import { useTeamCalendar } from '../hooks/useTeamCalendar'
+import { firstFreeTime, isTeamCalendarId, isTeamEvent, teamResponse, teamServerId, teammateId } from '../lib/teamCalendar'
+import { TeammatePicker } from './TeammatePicker'
 import { useCalendarStorePersistence } from '../hooks/useCalendarStorePersistence'
 import { mergeCalendarPushResult } from '../lib/calendarSync'
 import {
@@ -867,15 +870,17 @@ function EventReadBody({
           <Button size="sm" variant="ghost" onClick={onOpenMail}>Respond in Mail</Button>
           <EventReadSubWhen>Send your response to the organizer from the original invitation.</EventReadSubWhen>
         </EventReadRsvp>
-      ) : rsvpAttendee && parseGoogleEventLocalId(event.id) && (
+      ) : rsvpAttendee && (parseGoogleEventLocalId(event.id) || teamServerId(event.id)) && (
         <EventReadRsvp aria-busy={rsvpBusy}>
-          <Kicker>Your response</Kicker>
+          <Kicker>{teamServerId(event.id) ? 'Are you going?' : 'Your response'}</Kicker>
           {(['accepted', 'tentative', 'declined'] as const).map(response => (
             <Button key={response} size="sm"
               variant={rsvpAttendee.response === response ? 'primary' : 'ghost'}
-              disabled={readOnly || rsvpBusy}
+              disabled={(readOnly && !teamServerId(event.id)) || rsvpBusy}
               onClick={() => onRsvp(response, rsvpAttendee.email)}>
-              {response === 'accepted' ? 'Accept' : response === 'tentative' ? 'Maybe' : 'Decline'}
+              {teamServerId(event.id)
+                ? response === 'accepted' ? 'Yes' : response === 'tentative' ? 'Maybe' : 'No'
+                : response === 'accepted' ? 'Accept' : response === 'tentative' ? 'Maybe' : 'Decline'}
             </Button>
           ))}
           {rsvpBusy && <span role="status">Sending response…</span>}
@@ -910,7 +915,9 @@ function EventReadBody({
             <dt>Attendees</dt>
             <dd style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {event.attendees.map(attendee => <Badge key={attendee.email} tone="neutral">
-                {attendee.name || attendee.email} · {attendee.response === 'needsAction' ? 'Awaiting reply' : attendee.response}
+                {teamServerId(event.id)
+                  ? `${attendee.email === rsvpAttendee?.email ? 'You' : attendee.name} · ${attendee.response === 'accepted' ? 'going' : attendee.response === 'declined' ? 'not going' : attendee.response === 'tentative' ? 'maybe' : 'asked'}`
+                  : <>{attendee.name || attendee.email} · {attendee.response === 'needsAction' ? 'Awaiting reply' : attendee.response}</>}
               </Badge>)}
             </dd>
           </>
@@ -2777,6 +2784,18 @@ export function PureCalendarShell({
     void refreshFromProvider()
   }, [refreshFromProvider])
 
+  // The team calendar (the organisation's, on its server): one more account,
+  // looked at and sent to by its own hook.
+  const [teamNotice, setTeamNotice] = useState<string | null>(null)
+  const team = useTeamCalendar({
+    store,
+    setStore,
+    timeZone: displayTimeZone,
+    onRenamed: (from, to) => setSelectedEventId(current => (current === from ? to : current)),
+    onNotice: setTeamNotice,
+    holdId: detailsOpen && eventEditing ? selectedEventId : null,
+  })
+
   // Fetch subscribed ICS feeds (holidays, team calendars) and mirror them as
   // read-only calendars. The setting existed but was never fetched. Feeds are
   // independent of the Google account. A ref keeps the callback stable while
@@ -3293,6 +3312,44 @@ export function PureCalendarShell({
     })
   }
 
+  const [findingTime, setFindingTime] = useState(false)
+  const findTeamTime = async (): Promise<void> => {
+    if (!selectedEvent || !team.meta) return
+    const people = selectedEvent.attendees
+      .map(attendee => teammateId(attendee.email))
+      .filter((id): id is string => !!id)
+    const minutes = Math.max(15, Math.round((Date.parse(selectedEvent.endsAt) - Date.parse(selectedEvent.startsAt)) / 60_000) || 30)
+    const from = new Date(Math.max(Date.now(), Date.parse(selectedEvent.startsAt) || Date.now()))
+    const to = new Date(from.getTime() + 15 * 86_400_000)
+    setFindingTime(true)
+    setSelectedRangeError(null)
+    try {
+      const busy = await team.busy(people, from.toISOString(), to.toISOString())
+      const own = [Date.parse(selectedEvent.startsAt), Date.parse(selectedEvent.endsAt)]
+      const times = busy
+        .flatMap(person => person.times)
+        // This meeting, already booked, does not keep anyone from itself.
+        .filter(time => !(teamServerId(selectedEvent.id) && Date.parse(time.start) === own[0] && Date.parse(time.end) === own[1]))
+      const slot = firstFreeTime(times, {
+        from,
+        minutes,
+        workStart: availability.availableStartHour,
+        workEnd: availability.availableEndHour,
+        days: availability.availableDays,
+        timeZone: displayTimeZone,
+      })
+      if (!slot) {
+        setSelectedRangeError('No time in the next fortnight, within your available hours, suits everyone.')
+        return
+      }
+      updateSelectedEvent({ startsAt: slot.start, endsAt: slot.end, timeZone: displayTimeZone })
+    } catch (error) {
+      setSelectedRangeError(`Could not see when people are free. (${error instanceof Error ? error.message : String(error)})`)
+    } finally {
+      setFindingTime(false)
+    }
+  }
+
   const [rsvpBusy, setRsvpBusy] = useState(false)
   const rsvpInFlight = useRef(false)
   // Only a connected identity may respond.
@@ -3313,6 +3370,22 @@ export function PureCalendarShell({
     attendeeEmail?: string,
   ): void => {
     if (!selectedEvent) return
+    if (isTeamEvent(selectedEvent)) {
+      const answer = teamResponse(response)
+      if (!answer || rsvpInFlight.current) return
+      const eventId = selectedEvent.id
+      rsvpInFlight.current = true
+      setRsvpBusy(true)
+      setSelectedRangeError(null)
+      void team
+        .respond(eventId, answer)
+        .then(() => recordUserOperation('calendar.event.rsvp', `Answered ${answer} to ${selectedEvent.title}`))
+        .catch((error: unknown) => {
+          setSelectedRangeError(`Your answer was not sent. (${error instanceof Error ? error.message : String(error)})`)
+        })
+        .finally(() => { rsvpInFlight.current = false; setRsvpBusy(false) })
+      return
+    }
     if (!canEditCalendarEvent(store, selectedEvent)) {
       setSelectedRangeError('This calendar is read-only.')
       return
@@ -4871,6 +4944,17 @@ export function PureCalendarShell({
             </span>
           </Section>
         )}
+        {teamNotice && (
+          <Section aria-live="polite">
+            <Kicker>{team.meta?.organisation ?? 'Team'} calendar</Kicker>
+            <span style={{ color: 'var(--platform-colors-text-secondary)' }}>
+              {teamNotice}
+            </span>
+            <Button size="sm" variant="ghost" onClick={() => setTeamNotice(null)}>
+              OK
+            </Button>
+          </Section>
+        )}
         {bootNotice && (
           <Section aria-live="polite">
             <Kicker>Google Calendar</Kicker>
@@ -6154,16 +6238,41 @@ export function PureCalendarShell({
                             Calendar
                             <select
                               value={selectedEvent.calendarId}
-                              onChange={event =>
-                                updateSelectedEvent({
-                                  calendarId: event.target.value,
-                                })
-                              }
+                              onChange={event => {
+                                const calendarId = event.target.value
+                                // Onto a team calendar: everyone's there at once, so it is live (no draft), and
+                                // only teammates can be with it.
+                                updateSelectedEvent(
+                                  isTeamCalendarId(calendarId)
+                                    ? {
+                                        calendarId,
+                                        lifecycle: 'active',
+                                        status: 'confirmed',
+                                        recurrenceRule: undefined,
+                                        team: selectedEvent.team ?? {
+                                          kind: selectedEvent.allDay ? 'date' : 'meeting',
+                                          revision: 0,
+                                          mayEdit: true,
+                                        },
+                                        attendees: selectedEvent.attendees.filter(attendee =>
+                                          attendee.email.endsWith('@team.invalid'),
+                                        ),
+                                      }
+                                    : { calendarId },
+                                )
+                              }}
                               disabled={selectedEventReadOnly}
                             >
                               {(selectedEventReadOnly
                                 ? store.calendars
                                 : writableCalendars
+                              ).filter(calendar =>
+                                // An event already kept somewhere stays with that account.
+                                teamServerId(selectedEvent.id)
+                                  ? isTeamCalendarId(calendar.id)
+                                  : parseGoogleEventLocalId(selectedEvent.id)
+                                    ? !isTeamCalendarId(calendar.id)
+                                    : true,
                               ).map(calendar => (
                                 <option key={calendar.id} value={calendar.id}>
                                   {calendar.name}
@@ -6171,6 +6280,27 @@ export function PureCalendarShell({
                               ))}
                             </select>
                           </FieldLabel>
+                          {isTeamEvent(selectedEvent) && (
+                            <FieldLabel>
+                              Kind
+                              <select
+                                value={selectedEvent.team?.kind ?? (selectedEvent.allDay ? 'date' : 'meeting')}
+                                disabled={selectedEventReadOnly}
+                                onChange={event => {
+                                  const kind = event.target.value === 'date' ? 'date' : 'meeting'
+                                  const facts = { ...(selectedEvent.team ?? { revision: 0, mayEdit: true }), kind } as const
+                                  updateSelectedEvent(
+                                    kind === 'date'
+                                      ? { ...allDayEventPatch(selectedEvent, true, displayTimeZone), team: facts, attendees: [], busyStatus: 'free' }
+                                      : { team: facts, busyStatus: 'busy' },
+                                  )
+                                }}
+                              >
+                                <option value="meeting">Meeting</option>
+                                <option value="date">Important date</option>
+                              </select>
+                            </FieldLabel>
+                          )}
                           <FieldLabel>
                             All-day event
                             <input
@@ -6266,6 +6396,7 @@ export function PureCalendarShell({
                               <InlineError>{selectedRangeError}</InlineError>
                             </DetailsFullWidth>
                           )}
+                          {!isTeamEvent(selectedEvent) && (
                           <FieldLabel>
                             Stage
                             <select
@@ -6288,6 +6419,8 @@ export function PureCalendarShell({
                               <option value="draft">Draft</option>
                             </select>
                           </FieldLabel>
+                          )}
+                          {!isTeamEvent(selectedEvent) && (
                           <FieldLabel>
                             Status
                             <select
@@ -6312,6 +6445,8 @@ export function PureCalendarShell({
                               <option value="cancelled">Cancelled</option>
                             </select>
                           </FieldLabel>
+                          )}
+                          {!isTeamEvent(selectedEvent) && (
                           <FieldLabel>
                             Repeat
                             <select
@@ -6354,6 +6489,8 @@ export function PureCalendarShell({
                               <option value="monthly">Monthly</option>
                             </select>
                           </FieldLabel>
+                          )}
+                          {!isTeamEvent(selectedEvent) && (
                           <FieldLabel>
                             Availability
                             <select
@@ -6371,6 +6508,8 @@ export function PureCalendarShell({
                               <option value="tentative">Tentative</option>
                             </select>
                           </FieldLabel>
+                          )}
+                          {!isTeamEvent(selectedEvent) && (
                           <FieldLabel>
                             Visibility
                             <select
@@ -6388,6 +6527,7 @@ export function PureCalendarShell({
                               <option value="public">Public</option>
                             </select>
                           </FieldLabel>
+                          )}
                           <FieldLabel>
                             Location
                             <input
@@ -6400,6 +6540,7 @@ export function PureCalendarShell({
                               disabled={selectedEventReadOnly}
                             />
                           </FieldLabel>
+                          {!isTeamEvent(selectedEvent) && (
                           <FieldLabel>
                             Conference link
                             <input
@@ -6414,24 +6555,40 @@ export function PureCalendarShell({
                               disabled={selectedEventReadOnly}
                             />
                           </FieldLabel>
+                          )}
+                          {isTeamEvent(selectedEvent) ? (
+                            selectedEvent.team?.kind !== 'date' && team.meta ? (
+                              <DetailsFullWidth>
+                                <TeammatePicker
+                                  people={team.meta.people}
+                                  me={team.meta.me}
+                                  attendees={selectedEvent.attendees}
+                                  disabled={selectedEventReadOnly}
+                                  onChange={attendees => updateSelectedEvent({ attendees })}
+                                  {...(!selectedEvent.allDay ? { onFindTime: () => void findTeamTime(), findingTime } : {})}
+                                />
+                              </DetailsFullWidth>
+                            ) : null
+                          ) : (
                           <DetailsFullWidth>
-                            <FieldLabel>
-                              Attendees
-                              <textarea
-                                key={`${selectedEvent.id}:attendees`}
-                                defaultValue={formatEventAttendeesText(
-                                  selectedEvent.attendees,
-                                )}
-                                onBlur={event =>
-                                  updateSelectedEventAttendees(
-                                    event.target.value,
-                                  )
-                                }
-                                disabled={selectedEventReadOnly}
-                              />
-                            </FieldLabel>
-                          </DetailsFullWidth>
-                          {selectedEventRsvpAttendee && parseGoogleEventLocalId(selectedEvent.id) && selectedEvent.status !== 'cancelled' && (
+                              <FieldLabel>
+                                Attendees
+                                <textarea
+                                  key={`${selectedEvent.id}:attendees`}
+                                  defaultValue={formatEventAttendeesText(
+                                    selectedEvent.attendees,
+                                  )}
+                                  onBlur={event =>
+                                    updateSelectedEventAttendees(
+                                      event.target.value,
+                                    )
+                                  }
+                                  disabled={selectedEventReadOnly}
+                                />
+                              </FieldLabel>
+                            </DetailsFullWidth>
+                          )}
+                          {selectedEventRsvpAttendee && (parseGoogleEventLocalId(selectedEvent.id) || teamServerId(selectedEvent.id)) && selectedEvent.status !== 'cancelled' && (
                             <FieldLabel>
                               RSVP as{' '}
                               {selectedEventRsvpAttendee.name ||

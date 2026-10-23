@@ -39,12 +39,14 @@ export function mergeGoogleSnapshot(
   local: CalendarStore,
   remote: CalendarStore,
 ): CalendarStore {
+  // The team calendar's events are its own account's (lib/teamCalendar.ts): Google's snapshot leaves them be.
+  const team = (event: CalendarStore['events'][number]) => event.calendarId.startsWith('team:')
   const unsyncedLocal = local.events.filter(
-    event => event.source === 'provider' && event.syncState !== 'synced',
+    event => event.source === 'provider' && event.syncState !== 'synced' && !team(event),
   )
   const pendingIds = new Set(unsyncedLocal.map(event => event.id))
   const nonProviderLocal = local.events.filter(
-    event => event.source !== 'provider',
+    event => event.source !== 'provider' || team(event),
   )
   // A calendar the provider could not read this time keeps whatever was
   // already synced for it — an unreadable calendar is not an empty one.
