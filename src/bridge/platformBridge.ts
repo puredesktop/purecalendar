@@ -5,6 +5,7 @@ import {
   type OAuthCredentialStatus,
 } from '@purescience/platform-ui/bridge/credentials.mjs'
 import { PLATFORM_BRIDGE_METHODS } from '@purescience/platform-ui/bridge/methods'
+import { PLATFORM_BRIDGE_EVENTS } from '@purescience/platform-ui/bridge/events.mjs'
 import type { CalendarSettings } from '../types'
 
 export { bridge }
@@ -282,4 +283,81 @@ export async function openMeetingForEvent(event: {
   // PureMeet matches open requests by suffix, so the payload comes first and `.event` last.
   const resourceId = `${btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}.event`
   await bridge.call(PLATFORM_BRIDGE_METHODS.WORKSPACE_OPEN_APP, [{ appSlug: 'meet', resourceId }])
+}
+
+/**
+ * The organisation's team calendar (PureServer, through the host): meetings
+ * booked with teammates and the team's important dates. Only where the person
+ * has joined an organisation; `available: false` anywhere else.
+ */
+export interface TeamCalendarEvent {
+  id: string
+  kind: 'meeting' | 'date'
+  title: string
+  start: string
+  end: string
+  allDay: boolean
+  location: string | null
+  notes: string | null
+  team: { id: string; name: string } | null
+  attendees: Array<{ id: string; name: string; response: 'invited' | 'yes' | 'no' | 'maybe' }>
+  createdBy: { id: string; name: string }
+  revision: number
+  updatedAt: number
+  mayEdit: boolean
+}
+export interface TeamCalendarListing {
+  available: boolean
+  organisation: string | null
+  me: { id: string; name: string } | null
+  events: TeamCalendarEvent[]
+  people: Array<{ id: string; name: string }>
+  teams: Array<{ id: string; name: string }>
+}
+export interface TeamCalendarInput {
+  id?: string
+  ifRevision?: number
+  kind: 'meeting' | 'date'
+  title: string
+  start: string
+  end: string
+  allDay: boolean
+  location: string | null
+  notes: string | null
+  teamId: string | null
+  attendees: string[]
+}
+type Clash = { id: string; title: string; people: string[] }
+export type TeamCalendarSaved = { event: TeamCalendarEvent; clashes?: Clash[] }
+
+export function teamCalendarOffered(): boolean {
+  try {
+    return bridge.getMethods().includes(PLATFORM_BRIDGE_METHODS.TEAM_CALENDAR_LIST)
+  } catch {
+    return false
+  }
+}
+export const teamCalendar = {
+  list: (range: { from?: string; to?: string } = {}) =>
+    bridge.call(PLATFORM_BRIDGE_METHODS.TEAM_CALENDAR_LIST, [range]) as Promise<TeamCalendarListing>,
+  create: (input: TeamCalendarInput) =>
+    bridge.call(PLATFORM_BRIDGE_METHODS.TEAM_CALENDAR_CREATE, [input]) as Promise<TeamCalendarSaved>,
+  update: (input: TeamCalendarInput & { id: string }) =>
+    bridge.call(PLATFORM_BRIDGE_METHODS.TEAM_CALENDAR_UPDATE, [input]) as Promise<TeamCalendarSaved>,
+  respond: (id: string, response: 'yes' | 'no' | 'maybe') =>
+    bridge.call(PLATFORM_BRIDGE_METHODS.TEAM_CALENDAR_RESPOND, [{ id, response }]) as Promise<{ event: TeamCalendarEvent }>,
+  remove: (id: string) =>
+    bridge.call(PLATFORM_BRIDGE_METHODS.TEAM_CALENDAR_REMOVE, [id]) as Promise<unknown>,
+  busy: (people: string[], from: string, to: string) =>
+    bridge.call(PLATFORM_BRIDGE_METHODS.TEAM_CALENDAR_BUSY, [{ people, from, to }]) as Promise<{
+      busy: Array<{ id: string; name: string; times: Array<{ start: string; end: string }> }>
+    }>,
+}
+/** The team calendar changed where this person sees it. Returns unsubscribe. */
+export function onTeamCalendarChanged(listener: () => void): () => void {
+  try {
+    return bridge.onEvent(PLATFORM_BRIDGE_EVENTS.TEAM_CALENDAR_CHANGED, () => listener())
+  } catch {
+    return () => undefined
+  }
 }

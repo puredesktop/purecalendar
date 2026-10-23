@@ -800,9 +800,10 @@ export function cancelEvent(event: CalendarEvent): CalendarEvent {
   return { ...event, status: 'cancelled', syncState: 'pending' }
 }
 
-/** A `g:<calendarId>:<eventId>` id names an event that exists at Google. */
+/** A `g:<calendarId>:<eventId>` id names an event that exists at Google; `t:<id>`, one on the team calendar. */
 function isProviderBackedEventId(eventId: string): boolean {
-  return eventId.startsWith('g:')
+  // A team calendar's event already on the organisation's server is `t:`.
+  return eventId.startsWith('g:') || eventId.startsWith('t:')
 }
 
 /**
@@ -982,7 +983,8 @@ export function editableCalendars(
 
 export function firstEditableCalendarId(store: CalendarStore): string {
   // A connected calendar first: the one on this computer is the fallback when there is nothing else to write to.
-  const editable = editableCalendars(store)
+  // Never a team calendar: what lands there is the whole team's at once, so it is only ever chosen.
+  const editable = editableCalendars(store).filter(calendar => !calendar.id.startsWith('team:'))
   const connected = editable.filter(calendar => calendar.id !== LOCAL_CALENDAR_ID)
   return (
     connected.find(calendar => calendar.visible)?.id ??
@@ -1112,6 +1114,8 @@ export function canEditCalendarEvent(
   event: CalendarEvent,
 ): boolean {
   const calendar = store.calendars.find(item => item.id === event.calendarId)
+  // A team meeting someone else booked: theirs (or an administrator's) to change; invitees answer it.
+  if (event.team && !event.team.mayEdit) return false
   return !calendar?.readOnly
 }
 

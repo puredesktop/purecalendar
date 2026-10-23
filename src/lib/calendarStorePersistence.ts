@@ -186,6 +186,20 @@ function normalizeEvent(input: unknown): CalendarEvent | null {
       syncState === 'conflict'
         ? syncState
         : 'pending',
+    ...(isRecord(input.team) &&
+    (input.team.kind === 'meeting' || input.team.kind === 'date') &&
+    typeof input.team.revision === 'number'
+      ? {
+          team: {
+            kind: input.team.kind,
+            revision: input.team.revision,
+            mayEdit: input.team.mayEdit !== false,
+            ...(typeof input.team.problem === 'string'
+              ? { problem: input.team.problem }
+              : {}),
+          },
+        }
+      : {}),
   }
 }
 
@@ -240,7 +254,8 @@ function normalizeAccount(input: unknown): CalendarAccount | null {
     provider:
       input.provider === 'google' ||
       input.provider === 'caldav' ||
-      input.provider === 'local'
+      input.provider === 'local' ||
+      input.provider === 'team'
         ? input.provider
         : 'demo',
     name,
