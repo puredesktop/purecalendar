@@ -290,6 +290,27 @@ const createCalendarDraft: AgentToolHandler = async invoke => {
   }
 }
 
+/**
+ * Whether saving this event emails its guests: the sync loop asks the
+ * provider to send updates for any event with attendees that is not a draft
+ * (googleCalendarProvider `sendUpdatesQuery`; a delete always notifies).
+ * Telling guests is a send, so a release action (ps-suite #1017): the call
+ * must set `notifyInvitees`, which the manifest's riskWhen makes a release,
+ * and no agent can run it at any trust level. Only a person's own save in
+ * PureCalendar, or a CEO approval in the Executive team, does it.
+ */
+export function notifiesInvitees(event: Pick<CalendarStore['events'][number], 'attendees' | 'lifecycle'>): boolean {
+  return event.attendees.length > 0 && event.lifecycle !== 'draft'
+}
+
+const INVITEES_REFUSAL =
+  'This event has guests, and changing it emails them. Only a person can do this: change it in PureCalendar, or approve it in the Executive team.'
+
+const refusesQuietChange = (
+  args: Record<string, unknown>,
+  ...events: Array<Pick<CalendarStore['events'][number], 'attendees' | 'lifecycle'>>
+): boolean => args.notifyInvitees !== true && events.some(notifiesInvitees)
+
 const updateCalendarEvent: AgentToolHandler = async invoke => {
   const eventId = readAgentToolStringArg(invoke.arguments, 'eventId')
 
@@ -379,6 +400,9 @@ const updateCalendarEvent: AgentToolHandler = async invoke => {
       // negative-UTC-offset timezones.
       updated = { ...updated, ...allDayEventPatch(updated, allDay, zone) }
     }
+    if (refusesQuietChange(invoke.arguments, existing, updated)) {
+      return agentToolErrorContent(INVITEES_REFUSAL)
+    }
     commitEvents(store, events => events.map(e => (e.id === eventId ? updated : e)))
     recordAgentOperation(
       'calendar.event.update',
@@ -417,6 +441,10 @@ const deleteCalendarEvent: AgentToolHandler = async invoke => {
 
     if (!canEditCalendarEvent(store, existing)) {
       return agentToolErrorContent(`Event ${eventId} is read-only.`)
+    }
+
+    if (refusesQuietChange(invoke.arguments, existing)) {
+      return agentToolErrorContent(INVITEES_REFUSAL)
     }
 
     // Remove + tombstone: the tombstone keeps a provider-backed event from
@@ -473,6 +501,9 @@ const rescheduleCalendarEvent: AgentToolHandler = async invoke => {
       )
     }
 
+    if (refusesQuietChange(invoke.arguments, existing)) {
+      return agentToolErrorContent(INVITEES_REFUSAL)
+    }
     const moved = moveEvent(existing, resolved.instant)
     commitEvents(store, events => events.map(e => (e.id === eventId ? moved : e)))
     recordAgentOperation(

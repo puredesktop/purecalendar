@@ -199,3 +199,43 @@ describe('deleteCalendarEvent', () => {
     expect(getStore().removedEventIds).toEqual(['g:cal_work:evt-9'])
   })
 })
+
+describe('changes that email guests are release actions (#1017)', () => {
+  const guest = { email: 'mere@example.com', name: 'Mere', response: 'needsAction' } as CalendarEvent['attendees'][number]
+
+  it('refuses to change, move or delete an active event with guests', async () => {
+    const getStore = bindStore(makeStore([event({ id: 'evt-guests', attendees: [guest] })]))
+    for (const result of [
+      await appAgentHandlers.updateCalendarEvent(invoke({ eventId: 'evt-guests', title: 'Renamed' })),
+      await appAgentHandlers.rescheduleCalendarEvent(invoke({ eventId: 'evt-guests', startsAt: '2026-08-28T10:00:00Z' })),
+      await appAgentHandlers.deleteCalendarEvent(invoke({ eventId: 'evt-guests' })),
+    ]) {
+      expect(result.content).toMatch(/Only a person can do this/)
+    }
+    expect(getStore().events[0]).toMatchObject({ id: 'evt-guests', title: 'Event', startsAt: '2026-08-27T10:00:00.000Z' })
+  })
+
+  it('refuses adding guests to an active event', async () => {
+    bindStore(makeStore([event({ id: 'evt-quiet' })]))
+    const result = await appAgentHandlers.updateCalendarEvent(
+      invoke({ eventId: 'evt-quiet', attendees: [{ email: 'mere@example.com' }] }),
+    )
+    expect(result.content).toMatch(/Only a person can do this/)
+  })
+
+  it('changes drafts and events without guests as before', async () => {
+    const getStore = bindStore(makeStore([
+      event({ id: 'evt-draft', lifecycle: 'draft', attendees: [guest] }),
+      event({ id: 'evt-alone' }),
+    ]))
+    await appAgentHandlers.updateCalendarEvent(invoke({ eventId: 'evt-draft', title: 'Draft renamed' }))
+    await appAgentHandlers.updateCalendarEvent(invoke({ eventId: 'evt-alone', title: 'Alone renamed' }))
+    expect(getStore().events.map(item => item.title)).toEqual(['Draft renamed', 'Alone renamed'])
+  })
+
+  it('carries out the change only when the call says to tell the guests (a CEO-approved release)', async () => {
+    const getStore = bindStore(makeStore([event({ id: 'evt-guests', attendees: [guest] })]))
+    await appAgentHandlers.updateCalendarEvent(invoke({ eventId: 'evt-guests', title: 'Renamed', notifyInvitees: true }))
+    expect(getStore().events[0]?.title).toBe('Renamed')
+  })
+})
