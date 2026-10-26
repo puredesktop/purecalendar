@@ -216,6 +216,10 @@
                     "email"
                   ]
                 }
+              },
+              "notifyInvitees": {
+                "type": "boolean",
+                "description": "Set only to tell the event's guests about this change. Telling guests is a release action: an agent cannot do it at any trust level; only a person's own save in PureCalendar, or a CEO approval in the Executive team. Without it, a change to an event with guests is refused."
               }
             },
             "required": [
@@ -223,7 +227,10 @@
             ],
             "additionalProperties": false
           },
-          "requiresApproval": true
+          "requiresApproval": true,
+          "riskWhen": {
+            "notifyInvitees": "release"
+          }
         },
         {
           "name": "deleteCalendarEvent",
@@ -235,6 +242,10 @@
               "eventId": {
                 "type": "string",
                 "description": "ID of the event to delete."
+              },
+              "notifyInvitees": {
+                "type": "boolean",
+                "description": "Set only to tell the event's guests about this change. Telling guests is a release action: an agent cannot do it at any trust level; only a person's own save in PureCalendar, or a CEO approval in the Executive team. Without it, a change to an event with guests is refused."
               }
             },
             "required": [
@@ -242,7 +253,10 @@
             ],
             "additionalProperties": false
           },
-          "requiresApproval": true
+          "requiresApproval": true,
+          "riskWhen": {
+            "notifyInvitees": "release"
+          }
         },
         {
           "name": "rescheduleCalendarEvent",
@@ -257,6 +271,10 @@
               "startsAt": {
                 "type": "string",
                 "description": "New ISO 8601 start time for the event."
+              },
+              "notifyInvitees": {
+                "type": "boolean",
+                "description": "Set only to tell the event's guests about this change. Telling guests is a release action: an agent cannot do it at any trust level; only a person's own save in PureCalendar, or a CEO approval in the Executive team. Without it, a change to an event with guests is refused."
               }
             },
             "required": [
@@ -265,12 +283,16 @@
             ],
             "additionalProperties": false
           },
-          "requiresApproval": true
+          "requiresApproval": true,
+          "riskWhen": {
+            "notifyInvitees": "release"
+          }
         },
         {
           "name": "activateCalendarEvent",
-          "risk": "external",
-          "description": "Switch a draft event to active. This is the moment listed attendees become real invitees: the next sync carries them to the provider, which sends the invitations.",
+          "releaseButton": "Stage: Active",
+          "risk": "release",
+          "description": "Switch a draft event to active. This is the moment listed attendees become real invitees: the next sync carries them to the provider, which sends the invitations. A release action: only a person can do it, by setting the event's Stage to Active in PureCalendar, or by approving it as CEO in the Executive team. An agent cannot call this at any trust level; leave the draft for the person and say it is ready.",
           "inputSchema": {
             "type": "object",
             "properties": {
