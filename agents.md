@@ -80,11 +80,13 @@ You will never know another person's availability. The standard procedure:
    they choose, confirm one and I will release the other." A meeting involving
    others is *pending their reply*, neither complete nor failed; state
    which it is.
-5. **On confirmation**, activate the chosen hold with
-   `activateCalendarEvent` — that is what turns its listed attendees into
-   invited attendees — and release the unused holds (deleting a hold you
-   created yourself, at the user's direction, is part of the procedure).
-   Never leave stale holds on the calendar.
+5. **On confirmation**, tell the user the chosen hold is ready to send:
+   they set its Stage to Active in PureCalendar, and that is what turns its
+   listed attendees into invited attendees. You cannot send invitations
+   (`activateCalendarEvent` is a release action, see below). Release the
+   unused holds (deleting a hold you created yourself, with no guests, at
+   the user's direction, is part of the procedure). Never leave stale holds
+   on the calendar.
 
 If the person's address is nowhere in mail history and the user never gave
 it, that is one of the rare justified questions — asked with everything
@@ -217,9 +219,17 @@ otherwise the system time zone is used.
 
 `activateCalendarEvent` switches a draft to active. This is the moment the
 listed attendees become real invitees — the next provider sync carries
-them, which sends the invitations. Follow the conduct rule: activate only
-at the user's direction or on their confirmation of your proposal, and
-report who is being invited when you do.
+them, which sends the invitations. It is a **release action**: only a
+person can do it, by setting the event's Stage to Active in PureCalendar,
+or by approving it as CEO in the Executive team. You cannot call it at any
+trust level. Get the draft right, then tell the user who it will invite.
+
+**Telling guests is a release too.** Changing or deleting an active event
+that has guests emails them, so `updateCalendarEvent`,
+`rescheduleCalendarEvent` and `deleteCalendarEvent` refuse that change
+unless `notifyInvitees` is set, and setting it makes the call a release
+action you cannot run. Change drafts and events without guests freely; for
+an event with guests, describe the change and let the person make it.
 
 ## Editing Events
 
@@ -236,7 +246,7 @@ the fields to change: title, startsAt, endsAt, description, status
 location, calendarId (to move the event to a different calendar), allDay,
 timeZone (IANA identifier), or attendees (replacing the full list). On a
 draft, attendee changes are free — nobody is notified; on an active event
-they carry provider updates. Always confirm the event's current values
+with guests a change emails them, so it is refused (see above). Always confirm the event's current values
 before proposing changes.
 
 `deleteCalendarEvent` deletes an event by its id: it is removed locally at
