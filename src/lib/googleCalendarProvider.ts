@@ -21,6 +21,8 @@ const CALENDAR_API_BASE = 'https://www.googleapis.com/calendar/v3'
 const EVENT_PAGE_SIZE = 250
 const DEFAULT_PAST_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
 const DEFAULT_FUTURE_WINDOW_MS = 90 * 24 * 60 * 60 * 1000
+/** How far ahead a fetch reads by default: events past it are not in the snapshot. */
+export const GOOGLE_FUTURE_WINDOW_MS = DEFAULT_FUTURE_WINDOW_MS
 const GOOGLE_ACCOUNT_ID = 'google-account'
 const GOOGLE_SOURCE_ID = 'google-source'
 

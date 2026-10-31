@@ -38,7 +38,7 @@ import { SegmentedControl } from '@purescience/platform-ui/components/common/but
 import { Badge } from '@purescience/platform-ui/components/common/feedback/Badge'
 import { openExternalUrl } from '@purescience/platform-ui/bridge/os.mjs'
 import { eventMeetingUrl, eventDescriptionSegments, eventLinkLabel } from '../lib/eventLinks'
-import { openMeetingForEvent } from '../bridge/platformBridge'
+import { openMeetingForEvent, teamCalendar, teamCalendarOffered } from '../bridge/platformBridge'
 import { EmptyState } from '@purescience/platform-ui/components/common/feedback/EmptyState'
 import { generateIcsEventExport } from '@purescience/platform-ui/ics/generateIcs'
 import {
@@ -68,6 +68,8 @@ import {
 import { MeetingTimeFinder } from './MeetingTimeFinder'
 import { withMeetingDraft } from '../lib/meetingTimes'
 import type { TeamBusyReader } from '../lib/meetingAvailability'
+import { refreshOwnerCalendar } from '../lib/meetingOwnerRefresh'
+import type { OwnerCalendarRead } from '../lib/meetingTimes'
 import {
   mergeIcsFeedEvents,
   parseIcsFeed,
@@ -129,7 +131,7 @@ import {
 } from '../lib/calendarModel'
 import type { CalendarEventUndo } from '../lib/calendarModel'
 import { readableAccentColor } from '../lib/calendarColors'
-import { parseGoogleEventLocalId } from '../lib/googleCalendarProvider'
+import { GOOGLE_FUTURE_WINDOW_MS, parseGoogleEventLocalId } from '../lib/googleCalendarProvider'
 import { setGoogleCalendarPreferences } from '../lib/googleCalendarPreferences'
 import {
   GRID_Z_DRAGGING_EVENT,
@@ -2800,21 +2802,23 @@ export function PureCalendarShell({
     holdId: detailsOpen && eventEditing ? selectedEventId : null,
   })
 
-  // Find a time: the owner's calendar as it is now — re-read from Google where
-  // it is connected (a calendar that could not be read is reported, not taken
-  // as empty) — and teammates' team-calendar busy times while in an
+  // Find a time: the owner's calendar as it is now — every source behind a
+  // visible calendar (Google, the team calendar, feeds) re-read, one that
+  // cannot be read reported rather than taken as empty, and how far ahead
+  // they were read — and teammates' team-calendar busy times while in an
   // organisation. The agent tools read through the same two.
   const [meetingFinderOpen, setMeetingFinderOpen] = useState(false)
-  const readMeetingOwner = useCallback(async (): Promise<{ store: CalendarStore; timeZone: string }> => {
-    const timeZone = resolveCalendarTimeZone(latestStoreRef.current.settings).timeZone
-    if (!calendarProvider) return { store: latestStoreRef.current, timeZone }
-    const remote = await calendarProvider.fetchStore()
-    const merged = mergeGoogleSnapshot(latestStoreRef.current, remote)
-    return {
-      store: remote.failedCalendarIds?.length ? { ...merged, failedCalendarIds: remote.failedCalendarIds } : merged,
-      timeZone,
-    }
-  }, [calendarProvider])
+  const readMeetingOwner = useCallback(
+    (): Promise<OwnerCalendarRead> =>
+      refreshOwnerCalendar(latestStoreRef.current, {
+        google: calendarProvider
+          ? { fetchStore: () => calendarProvider.fetchStore(), merge: mergeGoogleSnapshot, futureMs: GOOGLE_FUTURE_WINDOW_MS }
+          : null,
+        team: teamCalendarOffered() ? { list: range => teamCalendar.list(range) } : null,
+        fetchFeed: url => networkFetch({ url }),
+      }),
+    [calendarProvider],
+  )
   const teamBusy = team.busy
   const meetingBusyReader = useMemo<TeamBusyReader | null>(() => (team.meta ? teamBusy : null), [team.meta, teamBusy])
   useEffect(() => {

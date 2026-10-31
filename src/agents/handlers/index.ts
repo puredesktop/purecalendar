@@ -29,11 +29,13 @@ import {
   meetingProposalText,
   validateMeetingRequest,
   withMeetingDraft,
+  meetingRequestKey,
   type MeetingRequestInput,
+  type OwnerCalendarRead,
   type ParticipantAvailability,
 } from '../../lib/meetingTimes'
 import {
-  hasSupportedAvailability,
+  isTeammateParticipant,
   readParticipantAvailability,
   TEAM_SOURCE,
   type TeamBusyReader,
@@ -632,11 +634,11 @@ const getCalendarSettings: AgentToolHandler = async () => {
  * judge a time the same way. Unset: the store as it is, and the bridge's team
  * calendar where it is offered.
  */
-let meetingOwnerReader: (() => Promise<{ store: CalendarStore; timeZone: string }>) | null = null
+let meetingOwnerReader: (() => Promise<OwnerCalendarRead>) | null = null
 let meetingBusyReader: TeamBusyReader | null | undefined
 
 export function setMeetingSources(sources: {
-  readOwner: (() => Promise<{ store: CalendarStore; timeZone: string }>) | null
+  readOwner: (() => Promise<OwnerCalendarRead>) | null
   busyReader: TeamBusyReader | null | undefined
 }): void {
   meetingOwnerReader = sources.readOwner
@@ -650,7 +652,15 @@ function busyReader(): TeamBusyReader | null {
     : null
 }
 
-async function readOwnerNow(): Promise<{ store: CalendarStore; timeZone: string }> {
+/**
+ * What qualified each participant in the last search for a request: whose
+ * free/busy a connection supplied. Drafting re-checks exactly those, even if
+ * the connection has gone since (then the draft is refused), rather than
+ * judging from what is connected at submission.
+ */
+const searchQualification = new Map<string, ParticipantAvailability[]>()
+
+async function readOwnerNow(): Promise<OwnerCalendarRead> {
   if (meetingOwnerReader) return meetingOwnerReader()
   const store = requireStore()
   return { store, timeZone: resolveCalendarTimeZone(store.settings).timeZone }
@@ -675,7 +685,7 @@ const findMeetingTimes: AgentToolHandler = async invoke => {
     if (!validation.ok) {
       return agentToolErrorContent(`Not searched: ${validation.errors.join(' ')}`)
     }
-    let owner: { store: CalendarStore; timeZone: string } | null = null
+    let owner: OwnerCalendarRead | null = null
     try {
       owner = await readOwnerNow()
     } catch (error) {
@@ -694,6 +704,7 @@ const findMeetingTimes: AgentToolHandler = async invoke => {
     )
     const result = searchMeetingTimes(input, { ...owner, now }, availability)
     if (!result.ok) return agentToolErrorContent(result.errors.join(' '))
+    searchQualification.set(meetingRequestKey(result.request), result.availability)
     return {
       content: formatAgentToolJson({
         ownerTimeZone: result.ownerTimeZone,
@@ -738,12 +749,15 @@ const createMeetingDraft: AgentToolHandler = async invoke => {
     }
     const reader = busyReader()
     const now = new Date()
-    // Teammates' free/busy qualified the time when it was found: it is read again now, and a failed read stops the draft.
-    const qualifiedBy: ParticipantAvailability[] = validation.request.participants.map(participant =>
-      hasSupportedAvailability(participant, reader)
-        ? { status: 'supplied', busy: [], checkedAt: now.toISOString(), source: TEAM_SOURCE }
-        : { status: 'none' },
-    )
+    // Whose free/busy qualified the time when it was found is read again now, and a failed read stops the draft.
+    // Without a recorded search (another session), every teammate counts as required, connected or not.
+    const qualifiedBy: ParticipantAvailability[] =
+      searchQualification.get(meetingRequestKey(validation.request)) ??
+      validation.request.participants.map(participant =>
+        isTeammateParticipant(participant)
+          ? { status: 'supplied', busy: [], checkedAt: now.toISOString(), source: TEAM_SOURCE }
+          : { status: 'none' },
+      )
     const outcome = await meetingDraftFlow.run(input, startsAt, qualifiedBy, {
       readOwner: readOwnerNow,
       readParticipants: (participants, from, to) => readParticipantAvailability(participants, from, to, reader),

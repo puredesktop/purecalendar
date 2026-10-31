@@ -12,6 +12,7 @@ import {
   type MeetingOption,
   type MeetingRequestInput,
   type MeetingSearch,
+  type OwnerCalendarRead,
 } from '../lib/meetingTimes'
 import { teammateAddress } from '../lib/teamCalendar'
 import type { CalendarEvent, CalendarStore } from '../types'
@@ -237,7 +238,7 @@ export interface MeetingTimeFinderProps {
   defaultFrom: string
   defaultTo: string
   /** The owner's calendar as it is now (re-read from its provider where there is one). */
-  readOwner: () => Promise<{ store: CalendarStore; timeZone: string }>
+  readOwner: () => Promise<OwnerCalendarRead>
   /** The team calendar's busy reader while this person is in an organisation; null otherwise. */
   busyReader: TeamBusyReader | null
   /** Teammates who can be added (their free/busy comes from the team calendar). */
@@ -316,7 +317,7 @@ export function MeetingTimeFinder({
     }
     setSearching(true)
     try {
-      let owner: { store: CalendarStore; timeZone: string }
+      let owner: OwnerCalendarRead
       try {
         owner = await readOwner()
       } catch (error) {

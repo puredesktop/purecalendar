@@ -217,6 +217,21 @@ describe('createMeetingDraft tool', () => {
     expect(store.get().events).toHaveLength(0)
   })
 
+  it('still re-checks a teammate whose free/busy qualified the time after the connection has gone', async () => {
+    const store = bindStore(makeStore())
+    setMeetingSources({ readOwner: null, busyReader: vi.fn(async () => [{ id: 'p-ben', name: 'Ben', times: [] }]) })
+    const participants = [{ name: 'Ben', email: 'p-ben@team.invalid', timeZone: 'UTC' }]
+    const found = JSON.parse((await appAgentHandlers.findMeetingTimes(call({ ...request, participants }))).content) as {
+      options: Array<{ startsAt: string; participants: Array<{ availability: string }> }>
+    }
+    expect(found.options[0]!.participants[0]!.availability).toBe('free')
+    setMeetingSources({ readOwner: null, busyReader: null })
+    const result = await appAgentHandlers.createMeetingDraft(call({ ...request, participants, startsAt: found.options[0]!.startsAt }))
+    expect(result.isError).toBe(true)
+    expect(result.content).toContain('Could not re-check Ben (the team calendar is not connected here)')
+    expect(store.get().events).toHaveLength(0)
+  })
+
   it('refuses when the owner\'s calendar cannot be re-read', async () => {
     const store = bindStore(makeStore())
     const found = JSON.parse((await appAgentHandlers.findMeetingTimes(call(request))).content) as { options: Array<{ startsAt: string }> }

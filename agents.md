@@ -244,7 +244,9 @@ user's working days/hours, clear of events on their visible calendars
 participant's local date and time with the zone named, with benefits and
 trade-offs, a `shortfall` when fewer than three qualify, and `proposalText`
 to offer the user for copying. It refuses, rather than suggest anything, when
-the request is invalid or the user's calendar could not be read.
+the request is invalid, any visible calendar (Google, team, feed) could not be
+re-read, or the dates lie beyond how far ahead those calendars are read (the
+error names the last date; search up to it).
 
 - Other people's availability is **unknown** unless the team calendar
   supplies it (teammates, address `<id>@team.invalid`); a time zone only

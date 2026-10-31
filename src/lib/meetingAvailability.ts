@@ -10,9 +10,9 @@ export type TeamBusyReader = (
 
 export const TEAM_SOURCE = 'team calendar'
 
-/** Whether a supported connection can tell this participant's free/busy: teammates, when the team calendar is here. */
-export function hasSupportedAvailability(participant: Pick<MeetingParticipant, 'email'>, reader: TeamBusyReader | null): boolean {
-  return !!reader && !!participant.email && teammateId(participant.email.toLowerCase()) !== null
+/** Whether this participant is a teammate: the one kind of person a supported connection (the team calendar) covers. */
+export function isTeammateParticipant(participant: Pick<MeetingParticipant, 'email'>): boolean {
+  return !!participant.email && teammateId(participant.email.toLowerCase()) !== null
 }
 
 /**

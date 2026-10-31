@@ -623,7 +623,19 @@ function shortfallText(found: number, counts: Record<Rejection, number>, total: 
  * cost a little when others are invited. The three are spread over different
  * days and do not overlap when the candidates allow.
  */
-type OwnerInput = { store: CalendarStore | null | undefined; timeZone: string; now: Date }
+/**
+ * The owner's calendar for a search: the store, its zone, and — when some of
+ * its calendars are only read for a window ahead (Google, the team calendar,
+ * feeds) — the last instant every one of them was read up to. Past it the
+ * calendar is not known, so nothing there is suggested or drafted.
+ */
+export interface OwnerCalendarRead {
+  store: CalendarStore
+  timeZone: string
+  coveredUntil?: string | null
+}
+
+type OwnerInput = { store: CalendarStore | null | undefined; timeZone: string; now: Date; coveredUntil?: string | null }
 
 function prepareSearch(
   input: Partial<MeetingRequestInput>,
@@ -643,6 +655,15 @@ function prepareSearch(
   const nowMs = owner.now.getTime()
   const rangeStart = Date.parse(instantFromZonedWallTime(request.from, 0, 0, ownerTimeZone))
   const rangeEnd = Date.parse(instantFromZonedWallTime(addDays(request.to, 1), 0, 0, ownerTimeZone))
+  const covered = owner.coveredUntil ? Date.parse(owner.coveredUntil) : Number.POSITIVE_INFINITY
+  if (rangeEnd + request.bufferAfterMinutes * MINUTE > covered) {
+    const last = localTimes(new Date(covered - MINUTE).toISOString(), new Date(covered - MINUTE).toISOString(), ownerTimeZone)
+    return {
+      ok: false,
+      kind: 'owner-calendar',
+      errors: [`Your calendars are only read up to ${last.dateLabel}, so later times cannot be checked. Search dates up to ${last.dateLabel}.`],
+    }
+  }
   const aligned = request.participants.map((_, index) => availability[index] ?? ({ status: 'none' } as const))
   return {
     ok: true,
@@ -802,7 +823,7 @@ export function meetingProposalText(search: MeetingSearch, options: MeetingOptio
 
 export interface MeetingDraftDeps {
   /** The owner's calendar as it is now — refreshed, not the copy the search used. */
-  readOwner: () => Promise<{ store: CalendarStore; timeZone: string }>
+  readOwner: () => Promise<OwnerCalendarRead>
   /**
    * Re-read the participants whose free/busy qualified the time. Throws, or
    * answers anything but 'supplied', when it cannot.
@@ -820,6 +841,19 @@ export type MeetingDraftOutcome =
   | { kind: 'conflict'; reason: string }
   | { kind: 'recheck-failed'; reason: string }
 
+/** One key per request (who, how long, which dates, which gaps), whatever start is chosen. */
+export function meetingRequestKey(request: MeetingRequest): string {
+  return JSON.stringify([
+    request.title,
+    request.durationMinutes,
+    request.from,
+    request.to,
+    request.bufferBeforeMinutes,
+    request.bufferAfterMinutes,
+    request.participants.map(participant => [participant.label, participant.email ?? '', participant.timeZone]),
+  ])
+}
+
 /** One key per request and chosen start: what a repeated submission is recognised by. */
 export function meetingDraftKey(request: MeetingRequest, startsAt: string): string {
   return JSON.stringify([
@@ -830,12 +864,16 @@ export function meetingDraftKey(request: MeetingRequest, startsAt: string): stri
   ])
 }
 
-function sameDraft(event: CalendarEvent, draft: { title: string; startsAt: string; endsAt: string }): boolean {
+const emailsOf = (emails: string[]): string => JSON.stringify(emails.map(email => email.trim().toLowerCase()).sort())
+
+/** A draft already on the calendar for this very meeting: same title, instant, length and people listed. */
+function sameDraft(event: CalendarEvent, draft: { title: string; startsAt: string; endsAt: string; emails: string[] }): boolean {
   return (
     event.lifecycle === 'draft' &&
     event.title === draft.title &&
     Date.parse(event.startsAt) === Date.parse(draft.startsAt) &&
-    Date.parse(event.endsAt) === Date.parse(draft.endsAt)
+    Date.parse(event.endsAt) === Date.parse(draft.endsAt) &&
+    emailsOf(event.attendees.map(attendee => attendee.email)) === emailsOf(draft.emails)
   )
 }
 
@@ -873,7 +911,7 @@ export function createMeetingDraftFlow() {
       return first.kind === 'created' ? { kind: 'already-created', event: first.event, summary: first.summary } : first
     }
     const attempt = (async (): Promise<MeetingDraftOutcome> => {
-      let owner: { store: CalendarStore; timeZone: string }
+      let owner: OwnerCalendarRead
       try {
         owner = await deps.readOwner()
       } catch (error) {
@@ -885,7 +923,14 @@ export function createMeetingDraftFlow() {
       const earlier = settled.get(key)
       const existing =
         (earlier && owner.store.events.find(event => event.id === earlier.id)) ||
-        owner.store.events.find(event => sameDraft(event, { title: request.title, startsAt: iso, endsAt }))
+        owner.store.events.find(event =>
+          sameDraft(event, {
+            title: request.title,
+            startsAt: iso,
+            endsAt,
+            emails: request.participants.flatMap(participant => (participant.email ? [participant.email] : [])),
+          }),
+        )
       if (existing) {
         settled.set(key, existing)
         return { kind: 'already-created', event: existing, summary: `Already drafted: ${existing.title}. No second draft was made.` }
@@ -915,17 +960,24 @@ export function createMeetingDraftFlow() {
           if (qualifiedBy[index]?.status !== 'supplied') return { status: 'none' } as const
           return reread[cursor++] ?? ({ status: 'unavailable', reason: 'no answer', source: 'team calendar' } as const)
         })
-        const failed = request.participants.filter((_, index) => qualifiedBy[index]?.status === 'supplied' && fresh[index]!.status !== 'supplied')
+        // A recheck must give fresh, usable free/busy: unreadable or out-of-date answers stop the draft.
+        const failed = request.participants.filter(
+          (_, index) => qualifiedBy[index]?.status === 'supplied' && usableBusy(fresh[index], now.getTime()) === null,
+        )
         if (failed.length) {
           const reasons = failed.map(participant => {
             const item = fresh[request.participants.indexOf(participant)]!
-            return item.status === 'unavailable' ? `${participant.label} (${item.reason})` : participant.label
+            return item.status === 'unavailable'
+              ? `${participant.label} (${item.reason})`
+              : item.status === 'supplied'
+                ? `${participant.label} (their free/busy came back out of date)`
+                : participant.label
           })
           return { kind: 'recheck-failed', reason: `Could not re-check ${reasons.join(', ')}. No draft was made; try again.` }
         }
       }
 
-      const prepared = prepareSearch(input, { store: owner.store, timeZone: owner.timeZone, now }, fresh)
+      const prepared = prepareSearch(input, { store: owner.store, timeZone: owner.timeZone, now, coveredUntil: owner.coveredUntil }, fresh)
       if (!prepared.ok) return { kind: 'recheck-failed', reason: `${prepared.errors.join(' ')} No draft was made.` }
       const check = checkCandidate(start, prepared.context)
       if (!check.ok) {

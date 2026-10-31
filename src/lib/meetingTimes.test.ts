@@ -572,6 +572,49 @@ describe('choosing an option', () => {
     expect(h.saveDraft).not.toHaveBeenCalled()
   })
 
+  it('drafts again for different people at the same title and time', async () => {
+    const h = harness(store())
+    const forAna = { ...week, participants: [participants[1]!] }
+    const found = search(forAna, h.live())
+    const chosen = found.options[0]!
+    const anaDraft = await createMeetingDraftFlow().run(forAna, chosen.startsAt, found.availability, h.deps)
+    expect(anaDraft.kind).toBe('created')
+    const forBen = { ...week, participants: [{ name: 'Ben', email: 'ben@example.com', timeZone: LONDON }] }
+    // Ana's draft holds the time now, so Ben's is refused as a conflict — never answered with Ana's draft.
+    const benDraft = await createMeetingDraftFlow().run(forBen, chosen.startsAt, [], h.deps)
+    expect(benDraft.kind).toBe('conflict')
+    expect(h.saveDraft).toHaveBeenCalledTimes(1)
+    const again = await createMeetingDraftFlow().run(forAna, chosen.startsAt, found.availability, h.deps)
+    expect(again.kind).toBe('already-created')
+    if (again.kind === 'already-created') expect(again.event.attendees.map(attendee => attendee.email)).toEqual(['ana@example.com'])
+  })
+
+  it('makes no draft when a required recheck comes back out of date', async () => {
+    const h = harness(store())
+    const found = search(input, h.live(), [benFree, { status: 'none' }])
+    const chosen = found.options[0]!
+    h.readParticipants.mockResolvedValueOnce([
+      { ...benFree, checkedAt: new Date(NOW.getTime() - 60 * 60_000).toISOString(), busy: [{ start: chosen.startsAt, end: chosen.endsAt }] },
+    ])
+    const outcome = await createMeetingDraftFlow().run(input, chosen.startsAt, found.availability, h.deps)
+    expect(outcome.kind).toBe('recheck-failed')
+    if (outcome.kind === 'recheck-failed') expect(outcome.reason).toContain('Ben (their free/busy came back out of date)')
+    expect(h.saveDraft).not.toHaveBeenCalled()
+  })
+
+  it('refuses times past how far ahead the calendars were read', async () => {
+    const h = harness(store())
+    const result = findMeetingTimes(week, { ...owner(store()), coveredUntil: '2026-11-04T00:00:00.000Z' })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.errors[0]).toContain('only read up to Tue 3 Nov 2026')
+    const outcome = await createMeetingDraftFlow().run(week, '2026-11-02T09:00:00.000Z', [], {
+      ...h.deps,
+      readOwner: async () => ({ store: h.live(), timeZone: LONDON, coveredUntil: '2026-11-04T00:00:00.000Z' }),
+    })
+    expect(outcome.kind).toBe('recheck-failed')
+    expect(h.saveDraft).not.toHaveBeenCalled()
+  })
+
   it('does not need a participant recheck when none qualified the time', async () => {
     const h = harness(store())
     const outsiderOnly = { ...week, participants: [participants[1]!] }
