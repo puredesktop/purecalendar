@@ -59,7 +59,8 @@ You will never know another person's availability. The standard procedure:
 
 1. **Pick 2–3 candidate slots** from the user's own free time (working
    hours, spaced across different days when possible, respecting the
-   buffers and norms below).
+   buffers and norms below). `findMeetingTimes` does this in one pass —
+   see "Finding a meeting time" below.
 2. **Hold them tentatively** — draft events titled
    `HOLD: <topic> w/ <person> (option 1)` etc. via `createCalendarDraft`.
    List the other person as an attendee on the drafts: on a draft,
@@ -230,6 +231,38 @@ that has guests emails them, so `updateCalendarEvent`,
 unless `notifyInvitees` is set, and setting it makes the call a release
 action you cannot run. Change drafts and events without guests freely; for
 an event with guests, describe the change and let the person make it.
+
+## Finding a meeting time
+
+`findMeetingTimes` is the Find a time panel as a tool: the same code ranks
+the same options. Pass `durationMinutes`, `from`/`to` (YYYY-MM-DD in the
+user's zone), `participants` with the IANA `timeZone` the user actually gave
+for each (never a guess or an offset), and optional `bufferBeforeMinutes` /
+`bufferAfterMinutes`. It returns up to three ranked options inside the
+user's working days/hours, clear of events on their visible calendars
+(recurring occurrences, all-day events and the gaps included), each in every
+participant's local date and time with the zone named, with benefits and
+trade-offs, a `shortfall` when fewer than three qualify, and `proposalText`
+to offer the user for copying. It refuses, rather than suggest anything, when
+the request is invalid or the user's calendar could not be read.
+
+- Other people's availability is **unknown** unless the team calendar
+  supplies it (teammates, address `<id>@team.invalid`); a time zone only
+  says what time it is for them. Never tell the user someone is free because
+  of their zone — repeat the tool's availability lines instead.
+- Show the options and wait for the user to choose. Then call
+  `createMeetingDraft` with the same request and the chosen `startsAt`: it
+  re-reads the calendar (and any teammate free/busy that qualified the time)
+  and makes **one** private draft at exactly that start and duration, or
+  refuses with the reason (now taken, or a recheck failed — search again).
+  Calling it again returns the same draft. It never activates, invites or
+  changes other events.
+
+| Task | Tool |
+|---|---|
+| "When could I meet Ana (New York) for an hour next week?" | `getCalendarSettings`, then `findMeetingTimes` |
+| "Take option 2" | `createMeetingDraft` with option 2's `startsAt` |
+| "Send it" | Not yours: the user sets the draft's Stage to Active |
 
 ## Editing Events
 

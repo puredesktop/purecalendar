@@ -63,7 +63,11 @@ import { mergeCalendarPushResult } from '../lib/calendarSync'
 import {
   syncAgentStore,
   setAgentStoreDispatch,
+  setMeetingSources,
 } from '../agents/handlers'
+import { MeetingTimeFinder } from './MeetingTimeFinder'
+import { withMeetingDraft } from '../lib/meetingTimes'
+import type { TeamBusyReader } from '../lib/meetingAvailability'
 import {
   mergeIcsFeedEvents,
   parseIcsFeed,
@@ -2796,6 +2800,34 @@ export function PureCalendarShell({
     holdId: detailsOpen && eventEditing ? selectedEventId : null,
   })
 
+  // Find a time: the owner's calendar as it is now — re-read from Google where
+  // it is connected (a calendar that could not be read is reported, not taken
+  // as empty) — and teammates' team-calendar busy times while in an
+  // organisation. The agent tools read through the same two.
+  const [meetingFinderOpen, setMeetingFinderOpen] = useState(false)
+  const readMeetingOwner = useCallback(async (): Promise<{ store: CalendarStore; timeZone: string }> => {
+    const timeZone = resolveCalendarTimeZone(latestStoreRef.current.settings).timeZone
+    if (!calendarProvider) return { store: latestStoreRef.current, timeZone }
+    const remote = await calendarProvider.fetchStore()
+    const merged = mergeGoogleSnapshot(latestStoreRef.current, remote)
+    return {
+      store: remote.failedCalendarIds?.length ? { ...merged, failedCalendarIds: remote.failedCalendarIds } : merged,
+      timeZone,
+    }
+  }, [calendarProvider])
+  const teamBusy = team.busy
+  const meetingBusyReader = useMemo<TeamBusyReader | null>(() => (team.meta ? teamBusy : null), [team.meta, teamBusy])
+  useEffect(() => {
+    setMeetingSources({ readOwner: readMeetingOwner, busyReader: meetingBusyReader })
+    return () => setMeetingSources({ readOwner: null, busyReader: undefined })
+  }, [readMeetingOwner, meetingBusyReader])
+  const saveMeetingDraft = (event: CalendarEvent): void => {
+    // The next choice reads latestStoreRef before React re-renders: it must already hold this draft.
+    latestStoreRef.current = withMeetingDraft(latestStoreRef.current, event)
+    setStore(current => withMeetingDraft(current, event))
+    recordUserOperation('calendar.event.create', `Created draft event "${event.title}" starting ${event.startsAt}`)
+  }
+
   // Fetch subscribed ICS feeds (holidays, team calendars) and mirror them as
   // read-only calendars. The setting existed but was never fetched. Feeds are
   // independent of the Google account. A ref keeps the callback stable while
@@ -4822,6 +4854,9 @@ export function PureCalendarShell({
               aria-label="Quick add event"
               title="Type a time and title, press Enter to create a draft event"
             />
+            <Button size="sm" variant="subtle" onClick={() => setMeetingFinderOpen(open => !open)}>
+              Find a time
+            </Button>
             <Button size="sm" variant="primary" onClick={createEvent}>
               New event
             </Button>
@@ -5117,6 +5152,25 @@ export function PureCalendarShell({
           </StatusBandItem>
         </StatusBand>
       </Main>
+
+      {meetingFinderOpen && (
+        <MeetingTimeFinder
+          defaultFrom={dateKeyInTimeZone(new Date(Math.max(Date.now(), anchorDate.getTime())), displayTimeZone)}
+          defaultTo={dateKeyInTimeZone(new Date(Math.max(Date.now(), anchorDate.getTime()) + 6 * 86_400_000), displayTimeZone)}
+          readOwner={readMeetingOwner}
+          busyReader={meetingBusyReader}
+          teammates={team.meta ? team.meta.people.filter(person => person.id !== team.meta!.me.id) : []}
+          saveDraft={saveMeetingDraft}
+          onOpenDraft={eventId => {
+            const draft = latestStoreRef.current.events.find(item => item.id === eventId)
+            if (draft) setAnchorDate(new Date(draft.startsAt))
+            setSelectedEventId(eventId)
+            setSelectedTaskId(null)
+            setDetailsOpen(true)
+          }}
+          onClose={() => setMeetingFinderOpen(false)}
+        />
+      )}
 
       {calendarPanelOpen && (
         <CalendarDrawer>
