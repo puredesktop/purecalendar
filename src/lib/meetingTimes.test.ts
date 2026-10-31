@@ -615,6 +615,35 @@ describe('choosing an option', () => {
     expect(h.saveDraft).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ['moved and shortened', { startsAt: '2026-11-02T14:00:00.000Z', endsAt: '2026-11-02T14:30:00.000Z' }, 'Mon 2 Nov 2026, 14:00–14:30'],
+    ['given other people', { attendees: [{ name: 'Ben', email: 'ben@example.com', response: 'needsAction' as const }] }, 'with Ben'],
+    ['activated', { lifecycle: 'active' as const }, 'no longer a draft'],
+  ])('does not pass off an earlier draft that has since been %s as the choice', async (_, edit, says) => {
+    const h = harness(store())
+    const forAna = { ...week, participants: [participants[1]!] }
+    const found = search(forAna, h.live())
+    const chosen = found.options[0]!
+    expect(chosen.startsAt).not.toBe('2026-11-02T14:00:00.000Z')
+    const flow = createMeetingDraftFlow()
+    const first = await flow.run(forAna, chosen.startsAt, found.availability, h.deps)
+    if (first.kind !== 'created') throw new Error(first.kind)
+    const edited = { ...h.live().events.find(item => item.id === first.event.id)!, ...edit }
+    h.set({ ...h.live(), events: h.live().events.map(item => (item.id === edited.id ? edited : item)) })
+    const again = await flow.run(forAna, chosen.startsAt, found.availability, h.deps)
+    expect(again.kind).toBe('draft-changed')
+    if (again.kind === 'draft-changed') {
+      expect(again.reason).toContain(says)
+      expect(again.reason).toContain('It was left as it is and no new draft was made')
+    }
+    // The edited event is left exactly as the person made it, and nothing more was written.
+    expect(h.live().events.find(item => item.id === edited.id)).toEqual(edited)
+    expect(h.saveDraft).toHaveBeenCalledTimes(1)
+    // Choosing the time again is no longer answered with the edited event.
+    const third = await flow.run(forAna, chosen.startsAt, found.availability, h.deps)
+    expect(third.kind).not.toBe('already-created')
+  })
+
   it('does not need a participant recheck when none qualified the time', async () => {
     const h = harness(store())
     const outsiderOnly = { ...week, participants: [participants[1]!] }

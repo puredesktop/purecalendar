@@ -840,6 +840,8 @@ export type MeetingDraftOutcome =
   | { kind: 'invalid'; errors: string[] }
   | { kind: 'conflict'; reason: string }
   | { kind: 'recheck-failed'; reason: string }
+  /** The draft made for this choice has been edited since: left as it is, and not passed off as the choice. */
+  | { kind: 'draft-changed'; event: CalendarEvent; reason: string }
 
 /** One key per request (who, how long, which dates, which gaps), whatever start is chosen. */
 export function meetingRequestKey(request: MeetingRequest): string {
@@ -919,18 +921,30 @@ export function createMeetingDraftFlow() {
       }
       const endsAt = new Date(start + request.durationMinutes * MINUTE).toISOString()
       const iso = new Date(start).toISOString()
-      // Drafted already from this choice (and still there), or an identical draft on the calendar: not again.
+      // Drafted already from this choice (and still as chosen), or an identical draft on the calendar: not again.
+      const intended = {
+        title: request.title,
+        startsAt: iso,
+        endsAt,
+        emails: request.participants.flatMap(participant => (participant.email ? [participant.email] : [])),
+      }
       const earlier = settled.get(key)
-      const existing =
-        (earlier && owner.store.events.find(event => event.id === earlier.id)) ||
-        owner.store.events.find(event =>
-          sameDraft(event, {
-            title: request.title,
-            startsAt: iso,
-            endsAt,
-            emails: request.participants.flatMap(participant => (participant.email ? [participant.email] : [])),
-          }),
-        )
+      const earlierNow = earlier ? owner.store.events.find(event => event.id === earlier.id) : undefined
+      if (earlier && !earlierNow) settled.delete(key)
+      if (earlierNow && !sameDraft(earlierNow, intended)) {
+        // Edited since (time, length, people, title or stage): it is no longer this choice. Leave it be, say so, and
+        // let a further choice of the same time make a new draft.
+        settled.delete(key)
+        const times = localTimes(earlierNow.startsAt, earlierNow.endsAt, owner.timeZone)
+        const listed = earlierNow.attendees.length ? ` with ${earlierNow.attendees.map(attendee => attendee.name || attendee.email).join(', ')}` : ''
+        const stage = earlierNow.lifecycle === 'draft' ? 'a draft' : 'no longer a draft'
+        return {
+          kind: 'draft-changed',
+          event: earlierNow,
+          reason: `The draft made for this time has been changed since: it is now "${earlierNow.title}", ${times.text}${listed}, ${stage}. It was left as it is and no new draft was made; choose this time again to draft it afresh.`,
+        }
+      }
+      const existing = earlierNow ?? owner.store.events.find(event => sameDraft(event, intended))
       if (existing) {
         settled.set(key, existing)
         return { kind: 'already-created', event: existing, summary: `Already drafted: ${existing.title}. No second draft was made.` }

@@ -764,7 +764,7 @@ const createMeetingDraft: AgentToolHandler = async invoke => {
       saveDraft: (event, base) => commitStore(base, current => withMeetingDraft(current, event)),
     })
     if (outcome.kind === 'invalid') return agentToolErrorContent(`No draft made: ${outcome.errors.join(' ')}`)
-    if (outcome.kind === 'conflict' || outcome.kind === 'recheck-failed') {
+    if (outcome.kind === 'conflict' || outcome.kind === 'recheck-failed' || outcome.kind === 'draft-changed') {
       return agentToolErrorContent(outcome.reason)
     }
     if (outcome.kind === 'created') {
