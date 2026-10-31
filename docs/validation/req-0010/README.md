@@ -1,21 +1,38 @@
 # req-0010 delivery verification
 
-Status: local verification passed; publication and PureDev review are pending.
-These logs are **not** receipts for a revised published commit.
+Status: local verification passed for the two sources identified below;
+publication and PureDev review are pending.
 
-## Latest run (review of `a671503`)
+## Latest runs (review of `6bf298d`)
 
-The [tests](tests.log), [typecheck](typecheck.log) and [build](build.log) logs
-were replaced by this run. Source: `a671503661bc75acf5ae96caaff88a2147109e79`
-plus the working-tree fixes for that review (a visible Google calendar missing
-from a refreshed snapshot is unreadable and keeps its stored events; a saved
-draft brings its newly found calendar, source and account into the app's state).
-The app's own `npm run test`, `npm run typecheck` and `npm run build` ran
-unchanged in a suite-shaped copy (same layout as below, reusing that earlier
-workspace's copied dependencies read-only). All exit **0**: **29 files, 306
-tests passed**, the typecheck passed, and the normal build (real SWC styling
-plugin) passed with only the existing large-chunk warning. The earlier run's
-notes follow.
+Both ran the app's own `npm run test`, `npm run typecheck` and `npm run build`
+unchanged (its `package.json`, `vite.config.js` and `tsconfig.json`, real SWC
+styling plugin) in a suite-shaped copy laid out as below, reusing the earlier
+isolated workspace's copied dependencies and shared packages read-only. Each log
+begins with the command and ends with its exit code.
+
+1. **Exact commit `6bf298dbcf2a8dded5d61b8d1e1704aba76a05d1`**, clean working
+   tree, tested from `git archive HEAD` (nothing else):
+   [identity](head-6bf298d/identity.log), [tests](head-6bf298d/tests.log),
+   [typecheck](head-6bf298d/typecheck.log), [build](head-6bf298d/build.log).
+   All exit **0**: 29 files, **306 tests** passed; typecheck passed; build
+   passed with only the existing large-chunk warning.
+2. **That commit plus this review's fix** (a cancelled draft no longer counts
+   as the meeting already prepared; a cancelled earlier draft is reported as
+   changed and left as it is), tested from the working tree:
+   [identity](identity.log), [tests](tests.log), [typecheck](typecheck.log),
+   [build](build.log). All exit **0**: 29 files, **308 tests** passed
+   (2 new regressions); typecheck passed; build passed with the same warning.
+
+The identity log for run 2 records the git tree ids of what was tested (`src`
+`94f464fde99b0a45a8a1d6420b2ebe53d705665d`, plus `plugin.json`, `package.json`,
+`tsconfig.json`, `vite.config.js`, `index.html`, `agents.md`). This worker
+cannot commit, so it cannot name the delivered commit; once PureDev publishes,
+`git rev-parse <delivered commit>:src` (and the same for the other paths) must
+print the same ids for run 2 to describe that commit. If they differ, rerun the
+three commands on the delivered head.
+
+The earlier runs' notes follow.
 
 ## Source identity (earlier run)
 

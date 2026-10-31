@@ -872,6 +872,8 @@ const emailsOf = (emails: string[]): string => JSON.stringify(emails.map(email =
 function sameDraft(event: CalendarEvent, draft: { title: string; startsAt: string; endsAt: string; emails: string[] }): boolean {
   return (
     event.lifecycle === 'draft' &&
+    // A cancelled draft holds no time (the calendar leaves it out), so it is not this meeting prepared.
+    event.status !== 'cancelled' &&
     event.title === draft.title &&
     Date.parse(event.startsAt) === Date.parse(draft.startsAt) &&
     Date.parse(event.endsAt) === Date.parse(draft.endsAt) &&
@@ -937,7 +939,12 @@ export function createMeetingDraftFlow() {
         settled.delete(key)
         const times = localTimes(earlierNow.startsAt, earlierNow.endsAt, owner.timeZone)
         const listed = earlierNow.attendees.length ? ` with ${earlierNow.attendees.map(attendee => attendee.name || attendee.email).join(', ')}` : ''
-        const stage = earlierNow.lifecycle === 'draft' ? 'a draft' : 'no longer a draft'
+        const stage =
+          earlierNow.status === 'cancelled'
+            ? `cancelled${earlierNow.lifecycle === 'draft' ? '' : ', no longer a draft'}`
+            : earlierNow.lifecycle === 'draft'
+              ? 'a draft'
+              : 'no longer a draft'
         return {
           kind: 'draft-changed',
           event: earlierNow,

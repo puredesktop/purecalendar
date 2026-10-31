@@ -1,0 +1,4 @@
+mode: head
+git rev-parse HEAD: 6bf298dbcf2a8dded5d61b8d1e1704aba76a05d1
+git status --porcelain (before the run):
+tested source: git archive of HEAD (the commit above, nothing else)

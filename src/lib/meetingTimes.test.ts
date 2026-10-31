@@ -593,6 +593,28 @@ describe('choosing an option', () => {
     expect(h.saveDraft).not.toHaveBeenCalled()
   })
 
+  it('does not take a cancelled identical draft on the calendar for this meeting prepared', async () => {
+    const h = harness(store())
+    const forAna = { ...week, participants: [participants[1]!] }
+    const found = search(forAna, h.live())
+    const chosen = found.options[0]!
+    // Made in an earlier session (so not remembered by this flow), then cancelled.
+    const made = await createMeetingDraftFlow().run(forAna, chosen.startsAt, found.availability, h.deps)
+    if (made.kind !== 'created') throw new Error(made.kind)
+    const cancelled = { ...h.live().events.find(item => item.id === made.event.id)!, status: 'cancelled' as const }
+    h.set({ ...h.live(), events: h.live().events.map(item => (item.id === cancelled.id ? cancelled : item)) })
+    const again = await createMeetingDraftFlow().run(forAna, chosen.startsAt, found.availability, h.deps)
+    expect(again.kind).toBe('created')
+    if (again.kind === 'created') {
+      expect(again.event.id).not.toBe(cancelled.id)
+      expect(again.event.status).not.toBe('cancelled')
+      expect(again.event.startsAt).toBe(chosen.startsAt)
+    }
+    // The cancelled one is left as it is.
+    expect(h.live().events.find(item => item.id === cancelled.id)).toEqual(cancelled)
+    expect(h.saveDraft).toHaveBeenCalledTimes(2)
+  })
+
   it('drafts again for different people at the same title and time', async () => {
     const h = harness(store())
     const forAna = { ...week, participants: [participants[1]!] }
@@ -640,6 +662,7 @@ describe('choosing an option', () => {
     ['moved and shortened', { startsAt: '2026-11-02T14:00:00.000Z', endsAt: '2026-11-02T14:30:00.000Z' }, 'Mon 2 Nov 2026, 14:00–14:30'],
     ['given other people', { attendees: [{ name: 'Ben', email: 'ben@example.com', response: 'needsAction' as const }] }, 'with Ben'],
     ['activated', { lifecycle: 'active' as const }, 'no longer a draft'],
+    ['cancelled', { status: 'cancelled' as const }, ', cancelled.'],
   ])('does not pass off an earlier draft that has since been %s as the choice', async (_, edit, says) => {
     const h = harness(store())
     const forAna = { ...week, participants: [participants[1]!] }
