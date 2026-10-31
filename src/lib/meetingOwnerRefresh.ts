@@ -74,6 +74,9 @@ export async function refreshOwnerCalendar(local: CalendarStore, sources: OwnerC
           from: new Date(now - TEAM_READ_WINDOW.pastMs).toISOString(),
           to: new Date(now + TEAM_READ_WINDOW.futureMs).toISOString(),
         })
+        // An answer that is not this person's team calendar (unavailable, or no identity) would make the merge drop
+        // the team calendars and their meetings — so their time would look free. It is a failed read instead.
+        if (!listing.available || !listing.me) throw new Error('the team calendar is not available to this person')
         store = mergeTeamSnapshot(store, listing, timeZone)
         horizons.push(now + TEAM_READ_WINDOW.futureMs)
       } catch (error) {

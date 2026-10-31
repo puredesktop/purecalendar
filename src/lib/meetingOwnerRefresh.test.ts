@@ -133,6 +133,8 @@ describe('re-reading the owner\'s calendar for Find a time', () => {
     ['Google fails', { google: { fetchStore: async () => { throw new Error('401') }, merge: (local: CalendarStore) => local, futureMs: 90 * DAY } }, 'Work could not be read'],
     ['the team calendar is not offered', { team: null }, 'Org could not be read'],
     ['the team calendar fails', { team: { list: async () => { throw new Error('offline') } } }, 'Org could not be read'],
+    ['the team calendar answers unavailable', { team: { list: async () => ({ ...listing([]), available: false }) } }, 'Org could not be read'],
+    ['the team calendar answers with no identity', { team: { list: async () => ({ ...listing([]), me: null }) } }, 'Org could not be read'],
     ['a feed fails', { fetchFeed: async () => ({ ok: false, status: 500, body: '' }) }, 'Holidays could not be read'],
     ['a feed is not a calendar', { fetchFeed: async () => ({ ok: true, status: 200, body: '<html>' }) }, 'Holidays could not be read'],
   ])('refuses to suggest or draft when %s', async (_, over, text) => {
@@ -143,6 +145,28 @@ describe('re-reading the owner\'s calendar for Find a time', () => {
     const saveDraft = vi.fn()
     const outcome = await createMeetingDraftFlow().run(week, '2026-11-02T11:00:00.000Z', [], {
       readOwner: () => refreshOwnerCalendar(store(), sources(over as Partial<OwnerCalendarSources>)),
+      saveDraft,
+      now: () => NOW,
+    })
+    expect(outcome.kind).toBe('recheck-failed')
+    expect(saveDraft).not.toHaveBeenCalled()
+  })
+
+  it('keeps a stored team meeting blocking when the team calendar answers unavailable', async () => {
+    // The whole week is taken by a team meeting already on the calendar; an unavailable answer must not erase it.
+    const held = store({
+      events: [
+        event({ id: 't:m1', calendarId: 'team:org', title: 'Offsite', startsAt: '2026-11-02T00:00:00.000Z', endsAt: '2026-11-07T00:00:00.000Z' }),
+      ],
+    })
+    const unavailable = sources({ team: { list: async () => ({ ...listing([]), available: false, me: null }) } })
+    const read = await refreshOwnerCalendar(held, unavailable)
+    expect(read.store.calendars.some(calendar => calendar.id === 'team:org')).toBe(true)
+    expect(read.store.events.some(item => item.id === 't:m1')).toBe(true)
+    expect(findMeetingTimes(week, { ...read, now: NOW }).ok).toBe(false)
+    const saveDraft = vi.fn()
+    const outcome = await createMeetingDraftFlow().run(week, '2026-11-02T09:00:00.000Z', [], {
+      readOwner: () => refreshOwnerCalendar(held, unavailable),
       saveDraft,
       now: () => NOW,
     })

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { styled } from 'styled-components'
 import { X } from 'lucide-react'
 import { Button } from '@purescience/platform-ui/components/common/buttons/Button'
@@ -286,6 +286,16 @@ export function MeetingTimeFinder({
   const [copied, setCopied] = useState<string | null>(null)
   const proposalRef = useRef<HTMLTextAreaElement>(null)
 
+  // Suggestions answer the request as it was searched. Any change to it retires them (and their wording), and a
+  // search still running for the old request is discarded when it returns: drafting needs a fresh search.
+  const formVersion = useRef(0)
+  useEffect(() => {
+    formVersion.current += 1
+    setResult(null)
+    setOutcome(null)
+    setCopied(null)
+  }, [title, duration, from, to, before, after, people])
+
   const addPerson = (person: Partial<PersonDraft> = {}) =>
     setPeople(current => [...current, { key: nextKey.current++, name: '', email: '', timeZone: '', ...person }])
   const updatePerson = (key: number, patch: Partial<PersonDraft>) =>
@@ -307,6 +317,8 @@ export function MeetingTimeFinder({
 
   const search = async (): Promise<void> => {
     const input = currentInput()
+    const version = formVersion.current
+    const stale = () => formVersion.current !== version
     setOutcome(null)
     setCopied(null)
     const validation = validateMeetingRequest(input)
@@ -321,6 +333,7 @@ export function MeetingTimeFinder({
       try {
         owner = await readOwner()
       } catch (error) {
+        if (stale()) return
         setErrors([`Your calendar could not be read (${error instanceof Error ? error.message : String(error)}), so no times are suggested. Try again.`])
         setResult(null)
         return
@@ -334,6 +347,7 @@ export function MeetingTimeFinder({
         busyReader,
         at,
       )
+      if (stale()) return
       const found = findMeetingTimes(input, { ...owner, now: at }, availability)
       if (!found.ok) {
         setErrors(found.errors)

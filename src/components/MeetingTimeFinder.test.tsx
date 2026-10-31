@@ -165,6 +165,43 @@ describe('Find a time panel', () => {
     expect(saveDraft).not.toHaveBeenCalled()
   })
 
+  it('retires suggestions when the request changes, so drafting needs a fresh search', async () => {
+    await render()
+    await click('Find times')
+    expect(container.querySelectorAll('article')).toHaveLength(3)
+    await type(field('Minutes'), '60')
+    expect(container.querySelectorAll('article')).toHaveLength(0)
+    expect(container.querySelector('textarea')).toBeNull()
+    expect([...container.querySelectorAll('button')].some(button => button.textContent === 'Draft this time')).toBe(false)
+    await click('Find times')
+    await click('Draft this time')
+    const draft = saveDraft.mock.calls[0]![0] as CalendarEvent
+    expect(Date.parse(draft.endsAt) - Date.parse(draft.startsAt)).toBe(60 * 60_000)
+  })
+
+  it('discards a search that returns after the request changed', async () => {
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    await render({
+      readOwner: async () => {
+        await gate
+        return { store: owner, timeZone: 'Europe/London' }
+      },
+    })
+    await click('Find times')
+    await type(field('Meeting'), 'Renamed')
+    await act(async () => {
+      release()
+      await gate
+    })
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    expect(container.querySelectorAll('article')).toHaveLength(0)
+  })
+
   it('creates one private draft for the chosen time', async () => {
     const onOpenDraft = vi.fn()
     await render({ onOpenDraft })
