@@ -174,6 +174,35 @@ describe('re-reading the owner\'s calendar for Find a time', () => {
     expect(saveDraft).not.toHaveBeenCalled()
   })
 
+  it('treats a visible Google calendar missing from the snapshot as unreadable, keeping its stored events', async () => {
+    // The primary calendar reads fine; the shared one (its description failed) is simply absent from the snapshot.
+    const withShared = store({
+      calendars: [...store().calendars, { id: 'shared', sourceId: 'google-source', name: 'Shared team', color: '#555', visible: true }],
+      events: [event({ id: 'g:shared:1', calendarId: 'shared', startsAt: '2026-11-02T00:00:00.000Z', endsAt: '2026-11-07T00:00:00.000Z' })],
+    })
+    const google: OwnerCalendarSources['google'] = {
+      fetchStore: async () => ({ ...store(), calendars: store().calendars.filter(calendar => calendar.id === 'primary'), events: [] }),
+      // As the app's merge does: synced provider events not in the snapshot go.
+      merge: (local, remote) => ({ ...local, events: [...local.events.filter(item => item.source !== 'provider'), ...remote.events] }),
+      futureMs: 90 * DAY,
+    }
+    const read = await refreshOwnerCalendar(withShared, sources({ google }))
+    expect(read.store.failedCalendarIds).toEqual(['shared'])
+    expect(read.store.calendars.some(calendar => calendar.id === 'shared')).toBe(true)
+    expect(read.store.events.some(item => item.id === 'g:shared:1')).toBe(true)
+    const result = findMeetingTimes(week, { ...read, now: NOW })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.errors[0]).toContain('Shared team could not be read')
+    const saveDraft = vi.fn()
+    const outcome = await createMeetingDraftFlow().run(week, '2026-11-02T09:00:00.000Z', [], {
+      readOwner: () => refreshOwnerCalendar(withShared, sources({ google })),
+      saveDraft,
+      now: () => NOW,
+    })
+    expect(outcome.kind).toBe('recheck-failed')
+    expect(saveDraft).not.toHaveBeenCalled()
+  })
+
   it('does not take dates past Google\'s read window as free', async () => {
     // Four months out: a remote event there is not in a fetch that reads 90 days ahead.
     const far = { ...week, from: '2027-03-01', to: '2027-03-05' }

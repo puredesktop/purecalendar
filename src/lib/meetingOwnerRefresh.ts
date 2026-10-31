@@ -56,6 +56,25 @@ export async function refreshOwnerCalendar(local: CalendarStore, sources: OwnerC
         const remote = await sources.google.fetchStore()
         store = sources.google.merge(store, remote)
         for (const id of remote.failedCalendarIds ?? []) failed.add(id)
+        // A visible Google calendar the snapshot left out (a shared calendar whose description failed, say) was not
+        // read: the merge would drop its synced events and its time would look free. It is unreadable instead, and
+        // keeps what was stored for it.
+        const returned = new Set(remote.calendars.map(calendar => calendar.id))
+        const omitted = new Set(google.filter(calendar => !returned.has(calendar.id)).map(calendar => calendar.id))
+        if (omitted.size) {
+          omitted.forEach(id => failed.add(id))
+          store = {
+            ...store,
+            calendars: [
+              ...store.calendars.filter(calendar => !omitted.has(calendar.id)),
+              ...local.calendars.filter(calendar => omitted.has(calendar.id)),
+            ],
+            events: [
+              ...store.events.filter(event => !omitted.has(event.calendarId)),
+              ...local.events.filter(event => omitted.has(event.calendarId)),
+            ],
+          }
+        }
         horizons.push(now + sources.google.futureMs)
       } catch (error) {
         console.warn('[purecalendar] Find a time: Google could not be re-read:', message(error))

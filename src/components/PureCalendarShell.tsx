@@ -2825,10 +2825,11 @@ export function PureCalendarShell({
     setMeetingSources({ readOwner: readMeetingOwner, busyReader: meetingBusyReader })
     return () => setMeetingSources({ readOwner: null, busyReader: undefined })
   }, [readMeetingOwner, meetingBusyReader])
-  const saveMeetingDraft = (event: CalendarEvent): void => {
-    // The next choice reads latestStoreRef before React re-renders: it must already hold this draft.
-    latestStoreRef.current = withMeetingDraft(latestStoreRef.current, event)
-    setStore(current => withMeetingDraft(current, event))
+  const saveMeetingDraft = (event: CalendarEvent, refreshed: CalendarStore): void => {
+    // The next choice reads latestStoreRef before React re-renders: it must already hold this draft. The refreshed
+    // copy the choice was checked against supplies the draft's calendar when the app has not seen it yet.
+    latestStoreRef.current = withMeetingDraft(latestStoreRef.current, event, refreshed)
+    setStore(current => withMeetingDraft(current, event, refreshed))
     recordUserOperation('calendar.event.create', `Created draft event "${event.title}" starting ${event.startsAt}`)
   }
 

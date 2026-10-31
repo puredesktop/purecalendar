@@ -3,7 +3,21 @@
 Status: local verification passed; publication and PureDev review are pending.
 These logs are **not** receipts for a revised published commit.
 
-## Source identity
+## Latest run (review of `a671503`)
+
+The [tests](tests.log), [typecheck](typecheck.log) and [build](build.log) logs
+were replaced by this run. Source: `a671503661bc75acf5ae96caaff88a2147109e79`
+plus the working-tree fixes for that review (a visible Google calendar missing
+from a refreshed snapshot is unreadable and keeps its stored events; a saved
+draft brings its newly found calendar, source and account into the app's state).
+The app's own `npm run test`, `npm run typecheck` and `npm run build` ran
+unchanged in a suite-shaped copy (same layout as below, reusing that earlier
+workspace's copied dependencies read-only). All exit **0**: **29 files, 306
+tests passed**, the typecheck passed, and the normal build (real SWC styling
+plugin) passed with only the existing large-chunk warning. The earlier run's
+notes follow.
+
+## Source identity (earlier run)
 
 - PR: https://github.com/puredesktop/purecalendar/pull/36
 - Branch: `puredev/find-meeting-times-and-prepare-a-private-9b4faf`
@@ -55,9 +69,9 @@ npm run typecheck
 npm run build
 ```
 
-- [Tests](tests.log): **29 files, 303 tests passed**, including all original behavioral checks and the two component regressions.
+- Tests (earlier run; its log has been replaced by the latest run): **29 files, 303 tests passed**, including all original behavioral checks and the two component regressions.
 - [Typecheck](typecheck.log): passed with the repository's original base config.
-- [Normal build](build.log): passed in 4.66 seconds. The only build warning is the existing large-chunk warning.
+- Normal build (earlier run): passed in 4.66 seconds. The only build warning is the existing large-chunk warning.
 - `git diff --check`: exit 0 in the original working tree.
 
 To reproduce the suite layout without modifying shared dependencies (macOS):

@@ -9,6 +9,7 @@ import {
   localTimes,
   meetingProposalText,
   validateMeetingRequest,
+  withMeetingDraft,
   type MeetingRequestInput,
   type MeetingSearch,
   type ParticipantAvailability,
@@ -465,6 +466,26 @@ describe('the owner\'s calendar could not be read', () => {
 
   it('still searches when only a hidden calendar failed', () => {
     expect(findMeetingTimes(week, owner({ ...store(), failedCalendarIds: ['cal_hidden'] })).ok).toBe(true)
+  })
+})
+
+describe('saving a draft into the app (the panel\'s save path)', () => {
+  it('brings in the draft\'s calendar from the refreshed copy, keeping changes made meanwhile', () => {
+    const current = store([event({ id: 'meanwhile' })])
+    const refreshed: CalendarStore = {
+      ...store(),
+      accounts: [{ id: 'google-account', provider: 'google', name: 'Google', email: 'me@gmail.com' }],
+      sources: [...store().sources, { id: 'google-source', accountId: 'google-account', name: 'Google', syncState: 'online' }],
+      calendars: [...store().calendars, { id: 'new-primary', sourceId: 'google-source', name: 'Primary', color: '#4285f4', visible: true }],
+    }
+    const draft = event({ id: 'draft', calendarId: 'new-primary', lifecycle: 'draft' })
+    const saved = withMeetingDraft(current, draft, refreshed)
+    expect(saved.calendars.map(calendar => calendar.id)).toEqual(['cal_work', 'cal_hidden', 'new-primary'])
+    expect(saved.sources.map(source => source.id)).toEqual(['src', 'google-source'])
+    expect(saved.accounts.map(account => account.id)).toEqual(['acct', 'google-account'])
+    expect(saved.events.map(item => item.id)).toEqual(['meanwhile', 'draft'])
+    // Already known: nothing duplicated.
+    expect(withMeetingDraft(saved, event({ id: 'second', calendarId: 'new-primary' }), refreshed).calendars).toHaveLength(3)
   })
 })
 

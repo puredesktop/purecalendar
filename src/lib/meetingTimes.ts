@@ -1034,9 +1034,23 @@ export function createMeetingDraftFlow() {
 }
 
 /** The store with a new draft added (and the calendar on this computer, when the draft was put there). */
-export function withMeetingDraft(store: CalendarStore, draft: CalendarEvent): CalendarStore {
-  const base = store.calendars.some(calendar => calendar.id === draft.calendarId) ? store : ensureLocalCalendar(store).store
-  return { ...base, events: [...base.events, draft] }
+export function withMeetingDraft(store: CalendarStore, draft: CalendarEvent, refreshed?: CalendarStore): CalendarStore {
+  let next = store
+  // The draft's calendar may be one the re-read just found (a Google calendar not yet in the app's state): bring it in
+  // from the refreshed copy with its source and account, keeping everything changed meanwhile, so the draft has a home.
+  const calendar = refreshed?.calendars.find(item => item.id === draft.calendarId)
+  if (refreshed && calendar && !next.calendars.some(item => item.id === calendar.id)) {
+    const source = refreshed.sources.find(item => item.id === calendar.sourceId)
+    const account = source ? refreshed.accounts.find(item => item.id === source.accountId) : undefined
+    next = {
+      ...next,
+      accounts: account && !next.accounts.some(item => item.id === account.id) ? [...next.accounts, account] : next.accounts,
+      sources: source && !next.sources.some(item => item.id === source.id) ? [...next.sources, source] : next.sources,
+      calendars: [...next.calendars, calendar],
+    }
+  }
+  if (!next.calendars.some(item => item.id === draft.calendarId)) next = ensureLocalCalendar(next).store
+  return { ...next, events: [...next.events, draft] }
 }
 
 /** The one flow the panel and the agent tool share, so a choice made in either is not drafted twice. */

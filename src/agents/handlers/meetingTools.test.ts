@@ -247,6 +247,29 @@ describe('createMeetingDraft tool', () => {
     expect(store.get().events).toHaveLength(0)
   })
 
+  it('brings a calendar the re-read just found into the app with the draft', async () => {
+    const store = bindStore(makeStore())
+    // The re-read finds a Google calendar the app's state does not have yet, and the draft goes to it.
+    const refreshed: CalendarStore = {
+      ...makeStore(),
+      accounts: [...makeStore().accounts, { id: 'google-account', provider: 'google', name: 'Google', email: 'me@gmail.com' }],
+      sources: [...makeStore().sources, { id: 'google-source', accountId: 'google-account', name: 'Google', syncState: 'online' }],
+      calendars: [{ id: 'new-primary', sourceId: 'google-source', name: 'Primary', color: '#4285f4', visible: true }, ...makeStore().calendars],
+    }
+    setMeetingSources({ readOwner: async () => ({ store: refreshed, timeZone: 'UTC' }), busyReader: null })
+    const found = JSON.parse((await appAgentHandlers.findMeetingTimes(call(request))).content) as { options: Array<{ startsAt: string }> }
+    // Something else changed the app meanwhile; it must survive the save.
+    store.set({ ...store.get(), events: [event({ id: 'meanwhile', startsAt: '2030-02-01T10:00:00.000Z', endsAt: '2030-02-01T11:00:00.000Z' })] })
+    const result = await appAgentHandlers.createMeetingDraft(call({ ...request, startsAt: found.options[0]!.startsAt }))
+    const created = JSON.parse(result.content) as { id: string; calendarId: string }
+    expect(created.calendarId).toBe('new-primary')
+    const saved = store.get()
+    expect(saved.calendars.map(calendar => calendar.id)).toEqual(['cal_work', 'new-primary'])
+    expect(saved.sources.some(source => source.id === 'google-source')).toBe(true)
+    expect(saved.accounts.some(account => account.id === 'google-account')).toBe(true)
+    expect(saved.events.map(item => item.id)).toEqual(['meanwhile', created.id])
+  })
+
   it('validates before anything else', async () => {
     const store = bindStore(makeStore())
     const missing = await appAgentHandlers.createMeetingDraft(call(request))

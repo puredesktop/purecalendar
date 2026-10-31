@@ -1,15 +1,14 @@
-
 > @purescience/purecalendar@0.0.0 test
 > vitest run
 
 
- RUN  v3.2.7 /private/tmp/purecalendar-req0010/apps/purecalendar
+ RUN  v3.2.7 /private/tmp/claude-501/-Users-adamhyde--puredev-worktrees-purecalendar-9b4faf-tnscky/947cc79c-cae4-465e-9e1f-2ee0c20763b3/scratchpad/ws/apps/purecalendar
 
- ✓ src/lib/calendarSync.test.ts (4 tests) 11ms
- ✓ src/lib/calendarFormatting.test.ts (1 test) 11ms
- ✓ src/lib/calendarModelDst.test.ts (18 tests) 12ms
- ✓ src/lib/calendarModel.test.ts (44 tests) 17ms
- ✓ src/lib/dataIntegrity.test.ts (19 tests) 14ms
+ ✓ src/agents/releaseTools.test.ts (4 tests) 26ms
+ ✓ src/lib/calendarFormatting.test.ts (1 test) 12ms
+ ✓ src/lib/calendarManagement.test.ts (6 tests) 11ms
+ ✓ src/lib/calendarSync.test.ts (4 tests) 10ms
+ ✓ src/lib/calendarModel.test.ts (44 tests) 19ms
 stderr | src/lib/googleCalendarProvider.test.ts > google calendar provider > pushes tombstoned deletes on sync and prunes confirmed ones
 [purecalendar] google delete failed for event g:primary-cal:flaky-evt; will retry: Google Calendar API error (500): backend error
 
@@ -60,39 +59,41 @@ stderr | src/lib/meetingOwnerRefresh.test.ts > re-reading the owner's calendar f
 stderr | src/lib/meetingOwnerRefresh.test.ts > re-reading the owner's calendar for Find a time > keeps a stored team meeting blocking when the team calendar answers unavailable
 [purecalendar] Find a time: team calendar could not be re-read: the team calendar is not available to this person
 
- ✓ src/lib/meetingOwnerRefresh.test.ts (13 tests) 39ms
- ✓ src/lib/teamCalendar.test.ts (6 tests) 16ms
- ✓ src/agents/releaseTools.test.ts (4 tests) 12ms
- ✓ src/lib/calendarManagement.test.ts (6 tests) 7ms
-stderr | src/lib/icsFeed.test.ts > parseIcsFeed > returns null for a non-iCalendar body
-[purecalendar] failed to parse ICS feed: invalid line (no token ";" or ":") "<html>not ics</html>"
-
- ✓ src/lib/icsFeed.test.ts (8 tests) 6ms
- ✓ src/lib/calendarColors.test.ts (4 tests) 2ms
+ ✓ src/lib/meetingOwnerRefresh.test.ts (14 tests) 42ms
+ ✓ src/lib/teamCalendar.test.ts (6 tests) 15ms
+ ✓ src/lib/dataIntegrity.test.ts (19 tests) 19ms
+ ✓ src/lib/calendarModelDst.test.ts (18 tests) 19ms
+ ✓ src/lib/calendarFeatures.test.ts (6 tests) 4ms
 stderr | src/lib/icsFileInvite.test.ts > parseIcsFileInvite > returns null for malformed input
 [purecalendar] failed to parse .ics file: invalid line (no token ";" or ":") "not an ics file at all"
 
- ✓ src/lib/icsFileInvite.test.ts (4 tests) 8ms
- ✓ src/lib/googleCalendarProvider.test.ts (30 tests) 179ms
- ✓ src/lib/intentConsumption.test.ts (2 tests) 2ms
- ✓ src/lib/calendarAddress.test.ts (7 tests) 2ms
- ✓ src/lib/calendarFeatures.test.ts (6 tests) 2ms
- ✓ src/lib/localCalendar.test.ts (2 tests) 1ms
- ✓ src/lib/calendarCommands.test.ts (2 tests) 2ms
- ✓ src/lib/gridLayers.test.ts (2 tests) 2ms
  ✓ src/hooks/usePureCalendarBoot.test.ts (9 tests) 4ms
- ✓ src/lib/meetingTimes.test.ts (46 tests) 372ms
- ✓ src/agents/agentStoreWrites.test.ts (2 tests) 2ms
- ✓ src/lib/resolveAgentEventTime.test.ts (5 tests) 11ms
- ✓ src/agents/handlers/handlers.test.ts (11 tests) 17ms
- ✓ src/agents/handlers/meetingTools.test.ts (11 tests) 91ms
- ✓ src/lib/eventLinks.test.ts (13 tests) 14ms
- ✓ src/hooks/useCalendarStorePersistence.test.tsx (5 tests) 30ms
- ✓ src/hooks/calendarStartup.test.tsx (10 tests) 47ms
- ✓ src/components/MeetingTimeFinder.test.tsx (9 tests) 217ms
+ ✓ src/lib/icsFileInvite.test.ts (4 tests) 5ms
+ ✓ src/lib/googleCalendarProvider.test.ts (30 tests) 175ms
+stderr | src/lib/icsFeed.test.ts > parseIcsFeed > returns null for a non-iCalendar body
+[purecalendar] failed to parse ICS feed: invalid line (no token ";" or ":") "<html>not ics</html>"
+
+ ✓ src/lib/icsFeed.test.ts (8 tests) 9ms
+ ✓ src/lib/calendarColors.test.ts (4 tests) 2ms
+ ✓ src/lib/gridLayers.test.ts (2 tests) 2ms
+ ✓ src/lib/calendarAddress.test.ts (7 tests) 3ms
+ ✓ src/lib/intentConsumption.test.ts (2 tests) 2ms
+ ✓ src/lib/calendarCommands.test.ts (2 tests) 1ms
+ ✓ src/lib/localCalendar.test.ts (2 tests) 2ms
+ ✓ src/lib/meetingTimes.test.ts (47 tests) 358ms
+ ✓ src/agents/agentStoreWrites.test.ts (2 tests) 3ms
+ ✓ src/lib/resolveAgentEventTime.test.ts (5 tests) 16ms
+ ✓ src/agents/handlers/handlers.test.ts (11 tests) 14ms
+ ✓ src/lib/eventLinks.test.ts (13 tests) 10ms
+ ✓ src/agents/handlers/meetingTools.test.ts (12 tests) 82ms
+ ✓ src/hooks/useCalendarStorePersistence.test.tsx (5 tests) 16ms
+ ✓ src/hooks/calendarStartup.test.tsx (10 tests) 27ms
+ ✓ src/components/MeetingTimeFinder.test.tsx (9 tests) 202ms
 
  Test Files  29 passed (29)
-      Tests  303 passed (303)
-   Start at  11:51:00
-   Duration  1.32s (transform 703ms, setup 0ms, collect 1.60s, tests 1.15s, environment 2.32s, prepare 1.10s)
+      Tests  306 passed (306)
+   Start at  11:59:30
+   Duration  1.31s (transform 682ms, setup 0ms, collect 1.58s, tests 1.11s, environment 1.84s, prepare 1.04s)
 
+
+exit 0
