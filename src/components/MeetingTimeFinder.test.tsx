@@ -154,6 +154,51 @@ describe('Find a time panel', () => {
     expect(proposal).not.toContain('Root canal')
   })
 
+  it.each([
+    {
+      transition: 'spring-forward', date: '2026-03-29', zone: 'Europe/London',
+      startsAt: '2026-03-29T00:30:00.000Z', endsAt: '2026-03-29T01:30:00.000Z',
+      label: 'Sun 29 Mar 2026', start: '00:30', end: '02:30',
+      offset: 'GMT+00:00', endOffset: 'GMT+01:00',
+    },
+    {
+      transition: 'fall-back ending in the repeated hour', date: '2026-11-01', zone: 'America/New_York',
+      startsAt: '2026-11-01T05:30:00.000Z', endsAt: '2026-11-01T06:30:00.000Z',
+      label: 'Sun 1 Nov 2026', start: '01:30', end: '01:30',
+      offset: 'GMT-04:00', endOffset: 'GMT-05:00',
+    },
+  ])('renders owner offsets across $transition consistently with the proposal and elapsed duration', async fixture => {
+    owner = store()
+    owner.settings = { availableDays: [0], availableStartHour: 0, availableEndHour: 4 }
+    // Leave only the selected elapsed hour free, forcing the real search to rank this crossing.
+    owner.events = [
+      event({ id: 'before', startsAt: `${fixture.date}T00:00:00Z`, endsAt: fixture.startsAt }),
+      event({ id: 'after', startsAt: fixture.endsAt, endsAt: `${fixture.date}T23:59:00Z` }),
+    ]
+    await render({
+      defaultFrom: fixture.date, defaultTo: fixture.date,
+      readOwner: async () => ({ store: owner, timeZone: fixture.zone }),
+      now: () => new Date('2026-03-01T00:00:00Z'),
+    })
+    await type(field('Minutes'), '60')
+    await click('Find times')
+    const options = container.querySelectorAll('article')
+    expect(options).toHaveLength(1)
+    expect(options[0]!.textContent).toContain(`${fixture.label}, ${fixture.start}–${fixture.end}`)
+    const zoneAndOffsets = `${fixture.zone} (${fixture.offset} → ${fixture.endOffset})`
+    expect(options[0]!.textContent).toContain(`You · ${zoneAndOffsets} · 60 min`)
+    expect(container.querySelector('textarea')!.value).toContain(
+      `${fixture.label}, ${fixture.start}–${fixture.end} ${zoneAndOffsets}`,
+    )
+    await click('Draft this time')
+    expect(saveDraft).toHaveBeenCalledTimes(1)
+    const draft = saveDraft.mock.calls[0]![0] as CalendarEvent
+    expect(draft).toMatchObject({ startsAt: fixture.startsAt, endsAt: fixture.endsAt, lifecycle: 'draft' })
+    expect(Date.parse(draft.startsAt)).toBe(Date.parse(`${fixture.date}T${fixture.start}:00${fixture.offset.slice(3)}`))
+    expect(Date.parse(draft.endsAt)).toBe(Date.parse(`${fixture.date}T${fixture.end}:00${fixture.endOffset.slice(3)}`))
+    expect(Date.parse(draft.endsAt) - Date.parse(draft.startsAt)).toBe(60 * 60_000)
+  })
+
   it('creates no draft when the chosen time has since been taken', async () => {
     await render()
     await click('Find times')

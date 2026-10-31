@@ -499,7 +499,7 @@ export function MeetingTimeFinder({
                       {option.owner.dateLabel}, {option.owner.start}–{option.owner.endDateLabel ? `${option.owner.endDateLabel}, ` : ''}
                       {option.owner.end}
                       <small>
-                        You · {option.owner.timeZone} ({option.owner.offset}) · {option.durationMinutes} min
+                        You · {option.owner.timeZone} ({option.owner.offset}{option.owner.endOffset !== option.owner.offset ? ` → ${option.owner.endOffset}` : ''}) · {option.durationMinutes} min
                       </small>
                     </OptionTime>
                     {option.participants.length > 0 && (
