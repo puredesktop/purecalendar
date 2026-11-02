@@ -272,3 +272,7 @@ event id and a one-line summary.
 Every meaningful user or agent interaction this app performs is recorded in
 the suite-wide operations ledger. The ledger is the canonical record for
 the PureAssistant tab.
+
+## What the executive team reads
+
+For an organisation that already shares mail with its team, `useTeamAvailabilityShare` writes `.appdata/executive/calendar/availability.json`: time zone, working hours and days, and busy times for the next three weeks. Times only: never titles, people, places or notes. Demo, free, cancelled and hidden-calendar events are left out. It is refreshed when the calendar changes while the app is open, and the team's Chief of Staff reads it with `read_calendar` to offer real times in drafts.

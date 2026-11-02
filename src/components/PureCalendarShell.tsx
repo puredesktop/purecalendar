@@ -58,6 +58,7 @@ import { mergeGoogleSnapshot } from '../hooks/usePureCalendarBoot'
 import { useTeamCalendar } from '../hooks/useTeamCalendar'
 import { firstFreeTime, isTeamCalendarId, isTeamEvent, teamResponse, teamServerId, teammateId } from '../lib/teamCalendar'
 import { TeammatePicker } from './TeammatePicker'
+import { useTeamAvailabilityShare } from '../hooks/useTeamAvailabilityShare'
 import { useCalendarStorePersistence } from '../hooks/useCalendarStorePersistence'
 import { mergeCalendarPushResult } from '../lib/calendarSync'
 import {
@@ -2566,6 +2567,7 @@ export function PureCalendarShell({
   const [eventUndoStack, setEventUndoStack] = useState<CalendarEventUndo[]>([])
   const { saveState, lastSavedAt, persistFailure, persistDirtyRef, saveNow } =
     useCalendarStorePersistence(store)
+  useTeamAvailabilityShare(store)
   const [selectedRangeError, setSelectedRangeError] = useState<string | null>(
     null,
   )
