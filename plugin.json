@@ -99,6 +99,71 @@
           "requiresApproval": false
         },
         {
+          "name": "findMeetingTimes",
+          "risk": "read",
+          "description": "Find up to three ranked meeting times in one pass: within the user's working days/hours, clear of events on their visible calendars (recurring occurrences, all-day events and the before/after gaps included), each shown in every participant's local date and time with the zone named, with the benefits and trade-offs of each, why fewer than three when fewer qualify, and copyable proposal wording with availability caveats. Read-only: nothing is created. Other people's availability is unknown unless the team calendar supplies it; never tell the user someone is free because of their time zone. If the user's calendar could not be read the tool refuses rather than suggest times. Show the options to the user and wait for them to choose one before calling createMeetingDraft.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "description": "What the meeting is called, used in the proposal wording and the draft title. Defaults to \"Meeting\"."
+              },
+              "durationMinutes": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Meeting length in whole minutes; must be more than 0 (at most 720)."
+              },
+              "from": {
+                "type": "string",
+                "description": "First day to search, YYYY-MM-DD in the user's calendar time zone (getCalendarSettings)."
+              },
+              "to": {
+                "type": "string",
+                "description": "Last day to search (inclusive), YYYY-MM-DD; not before from, and less than 62 days after it."
+              },
+              "participants": {
+                "type": "array",
+                "description": "Other people, each with the IANA time zone the user actually gave for them (Europe/Berlin, not +01:00 and not a guess). A time zone only shows their local time; it never says they are free. Teammates on the team calendar (email <id>@team.invalid) have their team meetings checked; everyone else is reported as availability unknown.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string"
+                    },
+                    "timeZone": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "timeZone"
+                  ]
+                }
+              },
+              "bufferBeforeMinutes": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Minutes that must be clear of the user's events before the meeting (0 or more, at most 240)."
+              },
+              "bufferAfterMinutes": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Minutes that must be clear of the user's events after the meeting (0 or more, at most 240)."
+              }
+            },
+            "required": [
+              "durationMinutes",
+              "from",
+              "to"
+            ],
+            "additionalProperties": false
+          },
+          "requiresApproval": false
+        },
+        {
           "name": "createCalendarDraft",
           "description": "Create a draft calendar event. Drafts are private working copies: attendees may be listed but nobody is invited or notified until the event is activated.",
           "inputSchema": {
@@ -147,6 +212,75 @@
               "title",
               "startsAt",
               "endsAt"
+            ],
+            "additionalProperties": false
+          },
+          "requiresApproval": true
+        },
+        {
+          "name": "createMeetingDraft",
+          "description": "After the user has chosen one of the findMeetingTimes options: re-read their calendar (and any teammate free/busy that qualified it) and, if the time is still free, create ONE private draft at exactly that start and duration, with the participants who have an email listed but not invited. Send the same request fields as the search plus the chosen startsAt. Repeating the call returns the same draft instead of a second one. If the time now conflicts, or a recheck fails, nothing is created and the error says why: run findMeetingTimes again. It never activates the event, sends invitations or changes other events; tell the user the draft is ready for them to set its Stage to Active.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "description": "What the meeting is called, used in the proposal wording and the draft title. Defaults to \"Meeting\"."
+              },
+              "durationMinutes": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Meeting length in whole minutes; must be more than 0 (at most 720)."
+              },
+              "from": {
+                "type": "string",
+                "description": "First day to search, YYYY-MM-DD in the user's calendar time zone (getCalendarSettings)."
+              },
+              "to": {
+                "type": "string",
+                "description": "Last day to search (inclusive), YYYY-MM-DD; not before from, and less than 62 days after it."
+              },
+              "participants": {
+                "type": "array",
+                "description": "Other people, each with the IANA time zone the user actually gave for them (Europe/Berlin, not +01:00 and not a guess). A time zone only shows their local time; it never says they are free. Teammates on the team calendar (email <id>@team.invalid) have their team meetings checked; everyone else is reported as availability unknown.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string"
+                    },
+                    "timeZone": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "timeZone"
+                  ]
+                }
+              },
+              "bufferBeforeMinutes": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Minutes that must be clear of the user's events before the meeting (0 or more, at most 240)."
+              },
+              "bufferAfterMinutes": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Minutes that must be clear of the user's events after the meeting (0 or more, at most 240)."
+              },
+              "startsAt": {
+                "type": "string",
+                "description": "The startsAt (ISO instant) of the option the user chose, exactly as findMeetingTimes returned it."
+              }
+            },
+            "required": [
+              "durationMinutes",
+              "from",
+              "to",
+              "startsAt"
             ],
             "additionalProperties": false
           },

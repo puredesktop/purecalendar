@@ -5,7 +5,7 @@ import {
   readAgentToolStringArg,
 } from '@purescience/platform-ui/bridge/agentToolHelpers'
 import type { AgentToolHandler } from '@purescience/platform-ui/bridge/react/usePlatformAgentTools'
-import { recordOperation } from '../../bridge/platformBridge'
+import { recordOperation, teamCalendar, teamCalendarOffered } from '../../bridge/platformBridge'
 import type { CalendarStore, EventAttendee, EventStatus } from '../../types'
 import {
   activateEvent,
@@ -18,10 +18,28 @@ import {
   isDraftEvent,
   moveEvent,
   removeEventWithTombstone,
+  resolveCalendarTimeZone,
   searchCalendarStore,
   systemTimeZone,
   visibleCalendarEvents,
 } from '../../lib/calendarModel'
+import {
+  findMeetingTimes as searchMeetingTimes,
+  meetingDraftFlow,
+  meetingProposalText,
+  validateMeetingRequest,
+  withMeetingDraft,
+  meetingRequestKey,
+  type MeetingRequestInput,
+  type OwnerCalendarRead,
+  type ParticipantAvailability,
+} from '../../lib/meetingTimes'
+import {
+  isTeammateParticipant,
+  readParticipantAvailability,
+  TEAM_SOURCE,
+  type TeamBusyReader,
+} from '../../lib/meetingAvailability'
 
 type StoreDispatch = (
   updater: CalendarStore | ((prev: CalendarStore) => CalendarStore),
@@ -609,6 +627,167 @@ const getCalendarSettings: AgentToolHandler = async () => {
   }
 }
 
+/**
+ * Where Find a time reads from. The panel sets these to what it uses itself
+ * (the owner's calendar re-read from its provider, the team calendar's busy
+ * reader when this person is in an organisation), so the tool and the panel
+ * judge a time the same way. Unset: the store as it is, and the bridge's team
+ * calendar where it is offered.
+ */
+let meetingOwnerReader: (() => Promise<OwnerCalendarRead>) | null = null
+let meetingBusyReader: TeamBusyReader | null | undefined
+
+export function setMeetingSources(sources: {
+  readOwner: (() => Promise<OwnerCalendarRead>) | null
+  busyReader: TeamBusyReader | null | undefined
+}): void {
+  meetingOwnerReader = sources.readOwner
+  meetingBusyReader = sources.busyReader
+}
+
+function busyReader(): TeamBusyReader | null {
+  if (meetingBusyReader !== undefined) return meetingBusyReader
+  return teamCalendarOffered()
+    ? async (people, from, to) => (await teamCalendar.busy(people, from, to)).busy
+    : null
+}
+
+/**
+ * What qualified each participant in the last search for a request: whose
+ * free/busy a connection supplied. Drafting re-checks exactly those, even if
+ * the connection has gone since (then the draft is refused), rather than
+ * judging from what is connected at submission.
+ */
+const searchQualification = new Map<string, ParticipantAvailability[]>()
+
+async function readOwnerNow(): Promise<OwnerCalendarRead> {
+  if (meetingOwnerReader) return meetingOwnerReader()
+  const store = requireStore()
+  return { store, timeZone: resolveCalendarTimeZone(store.settings).timeZone }
+}
+
+function meetingInput(args: Record<string, unknown>): Partial<MeetingRequestInput> {
+  return {
+    title: typeof args.title === 'string' ? args.title : undefined,
+    durationMinutes: args.durationMinutes as number,
+    from: args.from as string,
+    to: args.to as string,
+    participants: args.participants as MeetingRequestInput['participants'],
+    bufferBeforeMinutes: args.bufferBeforeMinutes as number | undefined,
+    bufferAfterMinutes: args.bufferAfterMinutes as number | undefined,
+  }
+}
+
+const findMeetingTimes: AgentToolHandler = async invoke => {
+  try {
+    const input = meetingInput(invoke.arguments)
+    const validation = validateMeetingRequest(input)
+    if (!validation.ok) {
+      return agentToolErrorContent(`Not searched: ${validation.errors.join(' ')}`)
+    }
+    let owner: OwnerCalendarRead | null = null
+    try {
+      owner = await readOwnerNow()
+    } catch (error) {
+      return agentToolErrorContent(
+        `Your calendar could not be read (${error instanceof Error ? error.message : String(error)}), so no times are suggested. Try again.`,
+      )
+    }
+    const now = new Date()
+    const request = validation.request
+    const availability = await readParticipantAvailability(
+      request.participants,
+      new Date(Date.parse(`${request.from}T00:00:00Z`) - 86_400_000).toISOString(),
+      new Date(Date.parse(`${request.to}T00:00:00Z`) + 2 * 86_400_000).toISOString(),
+      busyReader(),
+      now,
+    )
+    const result = searchMeetingTimes(input, { ...owner, now }, availability)
+    if (!result.ok) return agentToolErrorContent(result.errors.join(' '))
+    searchQualification.set(meetingRequestKey(result.request), result.availability)
+    return {
+      content: formatAgentToolJson({
+        ownerTimeZone: result.ownerTimeZone,
+        options: result.options.map(option => ({
+          rank: option.rank,
+          startsAt: option.startsAt,
+          endsAt: option.endsAt,
+          yourTime: option.owner.text,
+          participants: option.participants.map(slot => ({
+            name: slot.label,
+            localTime: slot.local.text,
+            availability: slot.availability,
+            note: slot.availabilityNote,
+          })),
+          benefits: option.benefits,
+          tradeOffs: option.tradeOffs,
+        })),
+        shortfall: result.shortfall,
+        basis: result.basis,
+        availability: result.availabilityCaveats,
+        proposalText: meetingProposalText(result),
+        next: result.options.length
+          ? 'Show the person these options. Only after they pick one, call createMeetingDraft with the same request and that option\'s startsAt.'
+          : 'Tell the person why nothing qualified and what to widen.',
+      }),
+    }
+  } catch (error) {
+    return agentToolErrorContent(error instanceof Error ? error.message : String(error))
+  }
+}
+
+const createMeetingDraft: AgentToolHandler = async invoke => {
+  try {
+    const input = meetingInput(invoke.arguments)
+    const startsAt = readAgentToolStringArg(invoke.arguments, 'startsAt')
+    if (!startsAt) {
+      return agentToolErrorContent('startsAt is required: the startsAt of the option the person chose from findMeetingTimes.')
+    }
+    const validation = validateMeetingRequest(input)
+    if (!validation.ok) {
+      return agentToolErrorContent(`No draft made: ${validation.errors.join(' ')}`)
+    }
+    const reader = busyReader()
+    const now = new Date()
+    // Whose free/busy qualified the time when it was found is read again now, and a failed read stops the draft.
+    // Without a recorded search (another session), every teammate counts as required, connected or not.
+    const qualifiedBy: ParticipantAvailability[] =
+      searchQualification.get(meetingRequestKey(validation.request)) ??
+      validation.request.participants.map(participant =>
+        isTeammateParticipant(participant)
+          ? { status: 'supplied', busy: [], checkedAt: now.toISOString(), source: TEAM_SOURCE }
+          : { status: 'none' },
+      )
+    const outcome = await meetingDraftFlow.run(input, startsAt, qualifiedBy, {
+      readOwner: readOwnerNow,
+      readParticipants: (participants, from, to) => readParticipantAvailability(participants, from, to, reader),
+      saveDraft: (event, base) => commitStore(base, current => withMeetingDraft(current, event, base)),
+    })
+    if (outcome.kind === 'invalid') return agentToolErrorContent(`No draft made: ${outcome.errors.join(' ')}`)
+    if (outcome.kind === 'conflict' || outcome.kind === 'recheck-failed' || outcome.kind === 'draft-changed') {
+      return agentToolErrorContent(outcome.reason)
+    }
+    if (outcome.kind === 'created') {
+      recordAgentOperation('calendar.event.create', `Created draft event "${outcome.event.title}" starting ${outcome.event.startsAt}`)
+    }
+    return {
+      content: formatAgentToolJson({
+        id: outcome.event.id,
+        created: outcome.kind === 'created',
+        startsAt: outcome.event.startsAt,
+        endsAt: outcome.event.endsAt,
+        timeZone: outcome.event.timeZone,
+        calendarId: outcome.event.calendarId,
+        lifecycle: outcome.event.lifecycle,
+        attendeesListed: outcome.event.attendees.map(attendee => attendee.email),
+        summary: outcome.summary,
+      }),
+    }
+  } catch (error) {
+    return agentToolErrorContent(error instanceof Error ? error.message : String(error))
+  }
+}
+
 export const appAgentHandlers = {
   listCalendarEvents,
   searchCalendar,
@@ -618,4 +797,6 @@ export const appAgentHandlers = {
   deleteCalendarEvent,
   rescheduleCalendarEvent,
   activateCalendarEvent,
+  findMeetingTimes,
+  createMeetingDraft,
 } satisfies Record<string, AgentToolHandler>

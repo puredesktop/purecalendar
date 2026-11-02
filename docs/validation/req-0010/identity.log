@@ -1,0 +1,14 @@
+mode: tree
+git rev-parse HEAD: 6bf298dbcf2a8dded5d61b8d1e1704aba76a05d1
+git status --porcelain (before the run):
+   M src/lib/meetingTimes.test.ts
+   M src/lib/meetingTimes.ts
+tested source: the working tree, rsync-copied
+git tree ids of that working tree (compare with git rev-parse <commit>:<path>):
+  src 94f464fde99b0a45a8a1d6420b2ebe53d705665d
+  plugin.json 464e4b746a2c53132e34f6ecf0164d283689d7c2
+  package.json af372f8c274cab9cd27c067978df3721dc42140d
+  tsconfig.json a021c231776768c7704cd19e78cbec07bba27b87
+  vite.config.js 7bff8639cac37807d2416157c45f2120f11ae057
+  index.html 3cce96c5e8d1072adb07ca05ef5b0619853ae5cd
+  agents.md ddd3f96ff25586be74cc5d578d7567ab73bd02a4

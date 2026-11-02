@@ -1,0 +1,6 @@
+$ npm run typecheck
+> @purescience/purecalendar@0.0.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+
+exit 0
