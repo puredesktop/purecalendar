@@ -1016,6 +1016,12 @@ const Header = styled.header`
   padding: 12px var(--pure-chrome-inset) 8px;
   border-bottom: 1px solid var(--pure-chrome-line);
   background: var(--pure-chrome-bar);
+
+  @media (max-width: 720px) {
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+  }
 `
 
 const Title = styled.h1`
@@ -1028,6 +1034,7 @@ const HeaderTitleRow = styled.div`
   display: flex;
   align-items: baseline;
   gap: 10px;
+  white-space: nowrap;
 `
 
 const HeaderYear = styled.span`
@@ -1046,10 +1053,26 @@ const Toolbar = styled.div`
   padding: 8px var(--pure-chrome-inset) 9px;
   border-bottom: 1px solid var(--pure-chrome-line);
   background: var(--pure-chrome-bar);
+
+  /* Three centred columns need this much room; narrower, the groups take rows so they never print over each other. */
+  @media (max-width: 1100px) {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+
+    > :nth-child(2) {
+      justify-content: flex-start;
+    }
+
+    > :last-child {
+      flex: 1 1 180px;
+    }
+  }
 `
 
 const ToolbarGroup = styled.div`
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-width: 0;
@@ -1074,6 +1097,7 @@ const SearchInput = styled.input.attrs(chrome('field'))`
 
 const QuickAddInput = styled(SearchInput)`
   width: min(260px, 30vw);
+  min-width: 150px;
 `
 
 const SearchResults = styled.div`
@@ -1148,6 +1172,7 @@ const CalendarViewport = styled.div`
 
 const RangeControls = styled.div`
   display: inline-flex;
+  flex-shrink: 0;
   align-items: stretch;
   gap: 0;
   padding: 0;
