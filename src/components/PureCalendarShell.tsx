@@ -2,7 +2,8 @@ import { AppSettingsPages, useAppSettings } from '@purescience/platform-bridge/c
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { styled } from 'styled-components'
-import { X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { CompactAgenda } from './CompactAgenda'
 import { EventSurfaceTitle } from './EventSurfaceTitle'
 import {
   bridge,
@@ -159,6 +160,13 @@ import type {
   RecurrenceRule,
 } from '../types'
 import { calendarRefs, eventRefs } from '../lib/agentRefs'
+import {
+  compactAgendaDays,
+  compactAgendaRange,
+  compactAgendaTitle,
+  compactIgnoresCommand,
+} from '../lib/compactAgenda'
+import { useCompactInRoom } from '../hooks/useCompactInRoom'
 
 interface PendingCalendarDraft {
   intent: CalendarDraftIntent
@@ -2469,6 +2477,10 @@ export function PureCalendarShell({
   resource?: ResourceOpenEvent | null
   onResourceHandled?: () => void
 }): React.ReactElement {
+  // Held in a page only. Everything compact hangs off this: with it off the app
+  // is unchanged, and it never touches settings.viewMode.
+  const compact = useCompactInRoom()
+  const hideInCompact = compact ? ({ display: 'none' } as const) : undefined
   const [store, setStore] = useState(initialStore)
   const latestStoreRef = useRef(store)
   latestStoreRef.current = store
@@ -2629,7 +2641,11 @@ export function PureCalendarShell({
     [store.settings],
   )
   const displayTimeZone = timeZoneConfig.timeZone
-  const range = weekRange(anchorDate)
+  const compactDays = useMemo(
+    () => (compact ? compactAgendaDays(anchorDate, displayTimeZone) : []),
+    [anchorDate, compact, displayTimeZone],
+  )
+  const range = compact ? compactAgendaRange(compactDays) : weekRange(anchorDate)
   const visibleEvents = useMemo(
     () => visibleCalendarEvents(store, range.start, range.end),
     [range.end, range.start, store],
@@ -2638,6 +2654,17 @@ export function PureCalendarShell({
     visibleEvents.find(event => event.id === selectedEventId) ??
     store.events.find(event => event.id === selectedEventId) ??
     null
+  // Compact starts at today, and Expand puts the full app back where it was
+  // (or on the event still open, whose recurring occurrence needs that week).
+  const anchorAfterCompactRef = useRef<Date | null>(null)
+  anchorAfterCompactRef.current =
+    detailsOpen && selectedEvent ? new Date(selectedEvent.startsAt) : null
+  useEffect(() => {
+    if (!compact) return
+    const anchorBefore = anchorDate
+    setAnchorDate(new Date())
+    return () => setAnchorDate(anchorAfterCompactRef.current ?? anchorBefore)
+  }, [compact])
   const selectedTask =
     store.tasks.find(task => task.id === selectedTaskId) ?? null
   const selectedCalendar = selectedEvent
@@ -2679,7 +2706,9 @@ export function PureCalendarShell({
     (_, index) =>
       new Date(Date.parse(range.start) + index * 24 * 60 * 60 * 1000),
   )
-  const headerRange = calendarRangeTitle(view, anchorDate, days)
+  const headerRange = compact
+    ? compactAgendaTitle(compactDays, displayTimeZone)
+    : calendarRangeTitle(view, anchorDate, days)
   const searchResults = useMemo(
     () => searchCalendarStore(store, searchQuery),
     [searchQuery, store],
@@ -2947,6 +2976,7 @@ export function PureCalendarShell({
   }, [])
 
   useEffect(() => {
+    if (compact) return
     if (view !== 'day' && view !== 'week') return
     const viewport = calendarViewportRef.current
     if (!viewport) return
@@ -2954,7 +2984,14 @@ export function PureCalendarShell({
       0,
       (availability.availableStartHour - 1) * HOUR_HEIGHT,
     )
-  }, [availability.availableStartHour, view])
+  }, [availability.availableStartHour, compact, view])
+
+  const compactFirstDay = compactDays[0]?.key
+  useEffect(() => {
+    if (!compact) return
+    const viewport = calendarViewportRef.current
+    if (viewport) viewport.scrollTop = 0
+  }, [compact, compactFirstDay])
 
   useEffect(() => {
     if (
@@ -3166,7 +3203,9 @@ export function PureCalendarShell({
     // month after crossing a week boundary.
     setAnchorDate(current => {
       const next = new Date(current)
-      if (view === 'day') {
+      if (compact) {
+        next.setDate(next.getDate() + direction * 7)
+      } else if (view === 'day') {
         next.setDate(next.getDate() + direction)
       } else if (view === 'month') {
         // Normalize to the 1st first so month-length differences can't skip a
@@ -3283,7 +3322,7 @@ export function PureCalendarShell({
       'calendar.event.create',
       `Created draft event starting ${startsAt}`,
     )
-    setAnchorDate(new Date(startsAt))
+    if (!compact) setAnchorDate(new Date(startsAt))
     setSelectedEventId(event.id)
     setSelectedTaskId(null)
     setSelectedRangeError(null)
@@ -3505,7 +3544,7 @@ export function PureCalendarShell({
 
   const openTaskDetail = (task: CalendarTask): void => {
     const startsAt = task.scheduledStart ?? task.dueAt
-    if (startsAt) setAnchorDate(new Date(startsAt))
+    if (startsAt && !compact) setAnchorDate(new Date(startsAt))
     setSelectedEventId(null)
     setSelectedTaskId(task.id)
     setDetailsOpen(true)
@@ -4423,6 +4462,7 @@ export function PureCalendarShell({
       metaKey: event.metaKey,
     })
     if (!command) return
+    if (compact && compactIgnoresCommand(command, detailsOpen)) return
     event.preventDefault()
 
     if (command === 'new-event') createEvent()
@@ -4833,18 +4873,32 @@ export function PureCalendarShell({
   }
 
   return (
-    <Root data-app="calendar">
+    <Root data-app="calendar" {...(compact ? { 'data-compact-in-room': '' } : {})}>
       <Main>
-        <Header>
+        <Header style={compact ? { alignItems: 'center', flexWrap: 'wrap' } : undefined}>
           <div>
             <HeaderTitleRow>
               <Title>{headerRange.title}</Title>
               <HeaderYear>{headerRange.year}</HeaderYear>
-              <Kicker>{view}</Kicker>
+              {!compact && <Kicker>{view}</Kicker>}
             </HeaderTitleRow>
           </div>
           <ToolbarGroup>
+            {compact && (
+              <RangeControls aria-label="Calendar range controls">
+                <Button size="sm" aria-label="Previous week" title="Previous week" onClick={() => shiftRange(-1)}>
+                  <PlatformIcon icon={ChevronLeft} size={14} strokeWidth={1.75} />
+                </Button>
+                <Button size="sm" onClick={() => setAnchorDate(new Date())}>
+                  Today
+                </Button>
+                <Button size="sm" aria-label="Next week" title="Next week" onClick={() => shiftRange(1)}>
+                  <PlatformIcon icon={ChevronRight} size={14} strokeWidth={1.75} />
+                </Button>
+              </RangeControls>
+            )}
             <QuickAddInput
+              style={hideInCompact}
               value={quickAddValue}
               onChange={event => setQuickAddValue(event.target.value)}
               onKeyDown={event => {
@@ -4861,15 +4915,17 @@ export function PureCalendarShell({
               aria-label="Quick add event"
               title="Type a time and title, press Enter to create a draft event"
             />
-            <Button size="sm" variant="subtle" onClick={() => setMeetingFinderOpen(open => !open)}>
-              Find a time
-            </Button>
+            {!compact && (
+              <Button size="sm" variant="subtle" onClick={() => setMeetingFinderOpen(open => !open)}>
+                Find a time
+              </Button>
+            )}
             <Button size="sm" variant="primary" onClick={createEvent}>
               New event
             </Button>
           </ToolbarGroup>
         </Header>
-        <Toolbar>
+        <Toolbar style={hideInCompact}>
           <ToolbarGroup>
             <Button
               size="sm"
@@ -5126,9 +5182,34 @@ export function PureCalendarShell({
           data-agent-ref="@open"
           data-agent-label="Calendar"
         >
-          {renderEvents()}
+          {compact ? (
+            <CompactAgenda
+              days={compactDays}
+              events={visibleEvents}
+              tasks={scheduledTasks}
+              timeZone={displayTimeZone}
+              now={now}
+              isLocal={event => isLocalCalendar(store, event.calendarId)}
+              eventColor={event =>
+                calendarCategoryColor(
+                  store.calendars.find(item => item.id === event.calendarId),
+                )
+              }
+              taskColor={EVENT_CATEGORY_COLORS.tasks}
+              onOpenEvent={event => {
+                setSelectedRangeError(null)
+                setSelectedEventId(event.id)
+                setSelectedTaskId(null)
+                setDetailsOpen(true)
+              }}
+              onOpenTask={openTaskDetail}
+              onAddOnDay={day => createEventOnDay(day)}
+            />
+          ) : (
+            renderEvents()
+          )}
         </CalendarViewport>
-        <StatusBand aria-live="polite">
+        <StatusBand aria-live="polite" style={hideInCompact}>
           <StatusBandItem
             $tone={
               persistFailure || saveState === 'dirty' ? 'pending' : 'rest'
@@ -5162,6 +5243,7 @@ export function PureCalendarShell({
 
       {meetingFinderOpen && (
         <MeetingTimeFinder
+          hidden={compact}
           defaultFrom={dateKeyInTimeZone(new Date(Math.max(Date.now(), anchorDate.getTime())), displayTimeZone)}
           defaultTo={dateKeyInTimeZone(new Date(Math.max(Date.now(), anchorDate.getTime()) + 6 * 86_400_000), displayTimeZone)}
           readOwner={readMeetingOwner}
@@ -5180,7 +5262,7 @@ export function PureCalendarShell({
       )}
 
       {calendarPanelOpen && (
-        <CalendarDrawer>
+        <CalendarDrawer style={hideInCompact}>
             <DrawerHeader>
               <Kicker>Calendars</Kicker>
               <Button size="sm" onClick={() => setCalendarPanelOpen(false)}>
