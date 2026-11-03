@@ -60,6 +60,7 @@ import { useTeamCalendar } from '../hooks/useTeamCalendar'
 import { firstFreeTime, isTeamCalendarId, isTeamEvent, teamResponse, teamServerId, teammateId } from '../lib/teamCalendar'
 import { TeammatePicker } from './TeammatePicker'
 import { useTeamAvailabilityShare } from '../hooks/useTeamAvailabilityShare'
+import { useTeamDates } from '../hooks/useTeamDates'
 import { useCalendarStorePersistence } from '../hooks/useCalendarStorePersistence'
 import { mergeCalendarPushResult } from '../lib/calendarSync'
 import {
@@ -2621,6 +2622,7 @@ export function PureCalendarShell({
   const { saveState, lastSavedAt, persistFailure, persistDirtyRef, saveNow } =
     useCalendarStorePersistence(store, setStore)
   useTeamAvailabilityShare(store, background)
+  useTeamDates(store, setStore, background)
   const [selectedRangeError, setSelectedRangeError] = useState<string | null>(
     null,
   )
@@ -3076,6 +3078,19 @@ export function PureCalendarShell({
     if (!resource?.path) return
     const resourcePath = calendarResourcePath(resource.path)
     let cancelled = false
+    // the event itself, opened from where it was agreed, so it can be checked
+    if (resourcePath.startsWith('event/')) {
+      const event = store.events.find(item => item.id === decodeURIComponent(resourcePath.slice('event/'.length)))
+      if (event) {
+        setSelectedEventId(event.id)
+        setSelectedTaskId(null)
+        setAnchorDate(new Date(event.startsAt))
+        setDetailsOpen(true)
+        setDraftError(null)
+      } else setDraftError('That event is not on this calendar any more.')
+      onResourceHandled()
+      return
+    }
     if (isCalendarDraftResourceId(resourcePath)) {
       bridge
         .call(PLATFORM_BRIDGE_METHODS.STORAGE_READ_JSON, [
