@@ -3,8 +3,9 @@
  * written by mail and consumed here. Both sides read-modify-write, so a
  * consumer writing back a stale in-memory map can drop intents mail added in
  * the meantime. The consumer therefore re-reads the file immediately before
- * the removal write and deletes ONLY the consumed key from that fresh copy —
- * this helper is the pure "delete only that key" step.
+ * the removal write, deletes ONLY the consumed key from that fresh copy, and
+ * writes it back with the read's version, so a save in between means reading
+ * again. This helper is the pure "delete only that key" step.
  */
 export function intentStoreWithoutKey<T>(
   store: { intents: Record<string, T> },

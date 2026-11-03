@@ -51,7 +51,7 @@ function normalizeAttendee(input: unknown): EventAttendee | null {
   }
 }
 
-function normalizeEvent(input: unknown): CalendarEvent | null {
+export function normalizeEvent(input: unknown): CalendarEvent | null {
   if (!isRecord(input)) return null
   const id = asString(input.id)
   const calendarId = asString(input.calendarId)
@@ -203,7 +203,7 @@ function normalizeEvent(input: unknown): CalendarEvent | null {
   }
 }
 
-function normalizeTask(input: unknown): CalendarTask | null {
+export function normalizeTask(input: unknown): CalendarTask | null {
   if (!isRecord(input)) return null
   const id = asString(input.id)
   const title = asString(input.title)
@@ -228,7 +228,7 @@ function normalizeTask(input: unknown): CalendarTask | null {
   }
 }
 
-function normalizeCalendar(input: unknown): Calendar | null {
+export function normalizeCalendar(input: unknown): Calendar | null {
   if (!isRecord(input)) return null
   const id = asString(input.id)
   const sourceId = asString(input.sourceId)
@@ -244,7 +244,7 @@ function normalizeCalendar(input: unknown): Calendar | null {
   }
 }
 
-function normalizeAccount(input: unknown): CalendarAccount | null {
+export function normalizeAccount(input: unknown): CalendarAccount | null {
   if (!isRecord(input)) return null
   const id = asString(input.id)
   const name = asString(input.name)
@@ -263,7 +263,7 @@ function normalizeAccount(input: unknown): CalendarAccount | null {
   }
 }
 
-function normalizeSource(input: unknown): CalendarSource | null {
+export function normalizeSource(input: unknown): CalendarSource | null {
   if (!isRecord(input)) return null
   const id = asString(input.id)
   const accountId = asString(input.accountId)
@@ -284,7 +284,7 @@ function normalizeSource(input: unknown): CalendarSource | null {
   }
 }
 
-function normalizeSettings(input: unknown): CalendarSettings {
+export function normalizeSettings(input: unknown): CalendarSettings {
   if (!isRecord(input)) return {}
   const settings: CalendarSettings = {}
   const viewMode = input.viewMode

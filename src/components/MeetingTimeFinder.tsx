@@ -235,6 +235,8 @@ interface PersonDraft {
 }
 
 export interface MeetingTimeFinderProps {
+  /** Out of sight but still mounted, so what was typed survives. */
+  hidden?: boolean
   defaultFrom: string
   defaultTo: string
   /** The owner's calendar as it is now (re-read from its provider where there is one). */
@@ -260,6 +262,7 @@ const outcomeMessage = (outcome: MeetingDraftOutcome): string =>
  * code the findMeetingTimes / createMeetingDraft tools use).
  */
 export function MeetingTimeFinder({
+  hidden = false,
   defaultFrom,
   defaultTo,
   readOwner,
@@ -391,7 +394,7 @@ export function MeetingTimeFinder({
   const unusedTeammates = teammates.filter(mate => !people.some(person => person.email === teammateAddress(mate.id)))
 
   return (
-    <Panel aria-label="Find a time">
+    <Panel aria-label="Find a time" style={hidden ? { display: 'none' } : undefined}>
       <PanelHeader>
         <Kicker>Find a time</Kicker>
         <Button size="sm" onClick={onClose}>

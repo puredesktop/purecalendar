@@ -20,10 +20,11 @@ const readIfPresent = async (path: string): Promise<string | null> => {
  * (lib/teamAvailability holds what is in it). A side channel: failing never disturbs the calendar, and it retries on the
  * next change or when the app next opens.
  */
-export function useTeamAvailabilityShare(store: CalendarStore): void {
+export function useTeamAvailabilityShare(store: CalendarStore, enabled = true): void {
   const latest = useRef(store)
   latest.current = store
   useEffect(() => {
+    if (!enabled) return
     const timer = window.setTimeout(() => {
       void (async () => {
         try {
@@ -41,5 +42,5 @@ export function useTeamAvailabilityShare(store: CalendarStore): void {
       })()
     }, 4_000)
     return () => window.clearTimeout(timer)
-  }, [store])
+  }, [store, enabled])
 }

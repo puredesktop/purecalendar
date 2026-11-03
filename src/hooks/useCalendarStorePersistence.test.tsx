@@ -2,12 +2,18 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { saveCalendarSettings, writeCalendarStoreFile } from '../bridge/platformBridge'
+import { fetchCalendarSettings, readCalendarStoreFileVersioned, saveCalendarSettings, writeCalendarStoreFile } from '../bridge/platformBridge'
+import { agreeWithLoaded } from '../lib/calendarStoreFile'
 import { calendarFixture } from '../test/calendarFixtures'
 import type { CalendarStore } from '../types'
 import { useCalendarStorePersistence } from './useCalendarStorePersistence'
 
-vi.mock('../bridge/platformBridge', () => ({ saveCalendarSettings: vi.fn(), writeCalendarStoreFile: vi.fn() }))
+vi.mock('../bridge/platformBridge', () => ({
+  fetchCalendarSettings: vi.fn(),
+  readCalendarStoreFileVersioned: vi.fn(),
+  saveCalendarSettings: vi.fn(),
+  writeCalendarStoreFile: vi.fn(),
+}))
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 let root: Root
 let host: HTMLDivElement
@@ -19,10 +25,18 @@ function Probe({ store }: { store: CalendarStore }) {
 async function render(store: CalendarStore) { await act(async () => root.render(<Probe store={store} />)) }
 const initial = calendarFixture()
 function edited(title: string) { return { ...initial, events: [{ ...initial.events[0]!, title }] } }
+const titleOf = (value: unknown) => (value as CalendarStore).events?.[0]?.title
+/** The store file as the shell would hold it. */
+let onDisk: unknown
+const remember = (file: string, value: unknown) => { if (file === 'calendar-store.json') onDisk = JSON.parse(JSON.stringify(value)) }
 
 beforeEach(() => {
   vi.resetAllMocks()
-  vi.mocked(writeCalendarStoreFile).mockResolvedValue(undefined)
+  onDisk = JSON.parse(JSON.stringify(initial))
+  agreeWithLoaded(initial)
+  vi.mocked(fetchCalendarSettings).mockResolvedValue({})
+  vi.mocked(readCalendarStoreFileVersioned).mockImplementation(async () => ({ value: onDisk }))
+  vi.mocked(writeCalendarStoreFile).mockImplementation(async (file, value) => { remember(file, value); return undefined })
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -42,14 +56,16 @@ describe('ordered calendar saves', () => {
     const second = edited('Second edit')
     let finishFirst!: () => void
     vi.mocked(writeCalendarStoreFile).mockImplementation(async (file, value) => {
-      if (file === 'calendar-store.json' && value === first) await new Promise<void>(resolve => { finishFirst = resolve })
+      if (file === 'calendar-store.json' && titleOf(value) === 'First edit') await new Promise<void>(resolve => { finishFirst = resolve })
+      remember(file, value)
+      return undefined
     })
     await render(first)
     let firstSave!: Promise<boolean>
-    await act(async () => { firstSave = persistence.saveNow(); await Promise.resolve() })
+    await act(async () => { firstSave = persistence.saveNow(); await new Promise(resolve => setTimeout(resolve, 0)) })
     await render(second)
     let secondSave!: Promise<boolean>
-    await act(async () => { secondSave = persistence.saveNow(); await Promise.resolve() })
+    await act(async () => { secondSave = persistence.saveNow(); await new Promise(resolve => setTimeout(resolve, 0)) })
     expect(writeCalendarStoreFile).toHaveBeenCalledTimes(2)
     let firstCovered: boolean | undefined
     await act(async () => {
@@ -73,11 +89,13 @@ describe('ordered calendar saves', () => {
     const change = edited('Transient edit')
     let finish!: () => void
     vi.mocked(writeCalendarStoreFile).mockImplementation(async (file, value) => {
-      if (file === 'calendar-store.json' && value === change) await new Promise<void>(resolve => { finish = resolve })
+      if (file === 'calendar-store.json' && titleOf(value) === 'Transient edit') await new Promise<void>(resolve => { finish = resolve })
+      remember(file, value)
+      return undefined
     })
     await render(change)
     let saving!: Promise<boolean>
-    await act(async () => { saving = persistence.saveNow(); await Promise.resolve() })
+    await act(async () => { saving = persistence.saveNow(); await vi.advanceTimersByTimeAsync(0) })
     await render(initial)
     expect(persistence.persistDirtyRef.current).toBe(true)
     await act(async () => { finish(); expect(await saving).toBe(false) })
@@ -109,7 +127,7 @@ describe('ordered calendar saves', () => {
     expect(persistence.persistDirtyRef.current).toBe(true)
     expect(persistence.persistFailure).toBe('Disk full')
     expect(host.textContent).toBe('dirty')
-    vi.mocked(writeCalendarStoreFile).mockResolvedValue(undefined)
+    vi.mocked(writeCalendarStoreFile).mockImplementation(async (file, value) => { remember(file, value); return undefined })
     await act(async () => { expect(await persistence.saveNow()).toBe(true) })
     expect(persistence.persistFailure).toBeNull()
   })

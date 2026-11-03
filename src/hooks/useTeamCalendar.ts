@@ -31,6 +31,9 @@ const refusal = (error: unknown): string | null => {
  * looked at on opening, whenever the server says it changed, every five
  * minutes and on coming back to the window; what is changed here is sent a
  * moment later, one event at a time, and answering a meeting is sent at once.
+ *
+ * With `enabled` off (a copy held in a page) it only reads who the organisation is, once. The normal tab looks and sends:
+ * two copies sending would book a meeting twice.
  */
 export function useTeamCalendar({
   store,
@@ -39,7 +42,9 @@ export function useTeamCalendar({
   onRenamed,
   onNotice,
   holdId,
+  enabled = true,
 }: {
+  enabled?: boolean
   store: CalendarStore
   setStore: Dispatch<SetStateAction<CalendarStore>>
   timeZone: string
@@ -76,6 +81,7 @@ export function useTeamCalendar({
   }, [setStore])
 
   useEffect(() => {
+    if (!enabled) return
     void refresh()
     let soon: number | undefined
     const later = () => {
@@ -92,11 +98,25 @@ export function useTeamCalendar({
       window.clearInterval(interval)
       document.removeEventListener('visibilitychange', back)
     }
-  }, [refresh])
+  }, [enabled, refresh])
+
+  useEffect(() => {
+    if (enabled || !teamCalendarOffered()) return
+    let live = true
+    const now = new Date().toISOString()
+    void teamCalendar.list({ from: now, to: now }).then(
+      listing => {
+        if (!live) return
+        setMeta(listing.available && listing.me ? { organisation: listing.organisation ?? 'Organisation', me: listing.me, people: listing.people, teams: listing.teams } : null)
+      },
+      error => console.warn('[purecalendar] team calendar could not be read:', error instanceof Error ? error.message : error),
+    )
+    return () => { live = false }
+  }, [enabled])
 
   // Send what changed here: new and changed events, then removals.
   useEffect(() => {
-    if (!meta || busyRef.current) return
+    if (!enabled || !meta || busyRef.current) return
     const toSend = teamEventsToSend(store).filter(event => event.id !== holdId)
     const tombstones = teamTombstones(store)
     if (!toSend.length && !tombstones.length) return
@@ -147,7 +167,7 @@ export function useTeamCalendar({
       if (transient) window.setTimeout(() => setRetry(value => value + 1), 30_000)
     }, 1200)
     return () => window.clearTimeout(timer)
-  }, [store, meta, retry, setStore, holdId])
+  }, [enabled, store, meta, retry, setStore, holdId])
 
   /** This person's answer to a team meeting, sent at once. */
   const respond = useCallback(

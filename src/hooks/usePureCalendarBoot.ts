@@ -4,9 +4,10 @@ import {
   fetchGoogleAccessToken,
   fetchGoogleCredentialStatus,
   networkFetch,
-  readCalendarStoreFile,
+  readCalendarStoreFileVersioned,
   writeCalendarStoreFile,
 } from '../bridge/platformBridge'
+import { agreeOnSettings, agreeWithLoaded } from '../lib/calendarStoreFile'
 import { demoCalendarStore } from '../lib/calendarModel'
 import {
   CALENDAR_STORE_BACKUP_FILE,
@@ -105,14 +106,17 @@ export function mergeGoogleSnapshot(
 
 export async function loadPersistedStore(): Promise<CalendarStore> {
   // Missing files are a first run. Failed reads or invalid files are not.
-  const main = await readCalendarStoreFile(CALENDAR_STORE_FILE).then(
-    value => ({ value, failed: false }),
-    () => ({ value: null, failed: true }),
+  const main = await readCalendarStoreFileVersioned(CALENDAR_STORE_FILE).then(
+    answer => ({ value: answer.value, version: answer.version, failed: false }),
+    () => ({ value: null, version: undefined, failed: true }),
   )
   const parsed = parsePersistedCalendarStore(main.value)
-  if (parsed) return parsed
-  const backup = await readCalendarStoreFile(CALENDAR_STORE_BACKUP_FILE).then(
-    value => ({ value, failed: false }),
+  if (parsed) {
+    agreeWithLoaded(parsed, { version: main.version })
+    return parsed
+  }
+  const backup = await readCalendarStoreFileVersioned(CALENDAR_STORE_BACKUP_FILE).then(
+    answer => ({ value: answer.value, failed: false }),
     () => ({ value: null, failed: true }),
   )
   const recovered = parsePersistedCalendarStore(backup.value)
@@ -120,12 +124,15 @@ export async function loadPersistedStore(): Promise<CalendarStore> {
     if (main.value !== null) {
       await writeCalendarStoreFile(CALENDAR_STORE_CORRUPT_FILE, main.value)
     }
+    agreeWithLoaded(recovered, { fileUnreadable: main.failed })
     return recovered
   }
   if (main.failed || backup.failed || main.value !== null || backup.value !== null) {
     throw new Error('Saved calendar data could not be read. Your files have been kept. Try again, or restore a valid calendar backup.')
   }
-  return demoCalendarStore()
+  const firstRun = demoCalendarStore()
+  agreeWithLoaded(firstRun, { version: main.version })
+  return firstRun
 }
 
 export function usePureCalendarBoot(ready: boolean): PureCalendarBootState & { retryBoot: () => void } {
@@ -162,6 +169,7 @@ export function usePureCalendarBoot(ready: boolean): PureCalendarBootState & { r
           ...persistedStore,
           settings: { ...persistedStore.settings, ...settings },
         }
+        agreeOnSettings(nextStore.settings)
 
         // Open the saved workspace before checking credentials or contacting
         // Google. The mounted calendar owns background refresh and merges into
