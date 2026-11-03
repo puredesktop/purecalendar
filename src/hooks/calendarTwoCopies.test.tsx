@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ensureLocalCalendar } from '../lib/calendarModel'
 import { calendarFixture } from '../test/calendarFixtures'
 import type { CalendarEvent, CalendarSettings, CalendarStore, CalendarTask } from '../types'
 
@@ -297,20 +298,61 @@ describe('two copies over calendar-store.json', () => {
     expect(ids(backup)).toEqual(['from-b', 'kept'])
   })
 
-  it('a first run writes no sample data back over what another copy deleted', async () => {
+  it('on a first run, both copies make the one local calendar and keep each other\'s events', async () => {
     const a = await open()
     const b = await open()
-    const sample = a.store().events[0]?.id
-    if (sample) {
-      await b.change(removeEvent(sample))
-      await b.save()
-      await a.change(addEvent(event('mine')))
-      await a.save()
-      expect(ids(fileStore())).not.toContain(sample)
+    const onLocal = (id: string) => (store: CalendarStore): CalendarStore => {
+      const { store: next, calendarId } = ensureLocalCalendar(store)
+      return addEvent({ ...event(id), calendarId })(next)
     }
-    await a.change(addEvent(event('mine-too')))
+    await a.change(onLocal('from-a'))
     await a.save()
-    expect(ids(fileStore())).toContain('mine-too')
+    await b.change(onLocal('from-b'))
+    await b.save()
+    expect(ids(fileStore())).toEqual(['from-a', 'from-b'])
+    expect(fileStore().calendars).toHaveLength(1)
+  })
+
+  it('a stale card\'s edit does not bring back a record the other copy deleted', async () => {
+    put('calendar-store.json', seedStore([event('deleted'), event('kept')]))
+    const stale = await open()
+    const other = await open()
+    await other.change(removeEvent('deleted'))
+    await other.save()
+    await stale.change(editEvent('deleted', { title: 'Edited on a stale card' }))
+    await stale.save()
+    expect(ids(fileStore())).toEqual(['kept'])
+    expect(ids(stale.store())).toEqual(['kept'])
+  })
+
+  it('an event deleted here and made again with the same id comes back', async () => {
+    put('calendar-store.json', seedStore([event('undone'), event('kept')]))
+    const a = await open()
+    const b = await open()
+    await a.change(removeEvent('undone'))
+    await a.save()
+    await a.change(addEvent(event('undone', 'Undo')))
+    await a.save()
+    await b.focus()
+    expect(titleOn(fileStore(), 'undone')).toBe('Undo')
+    expect(titleOn(b.store(), 'undone')).toBe('Undo')
+  })
+
+  it('an edit not yet pushed to Google survives a refresh in the other copy', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-01T10:00:00.000Z'))
+    put('calendar-store.json', seedStore([event('g:cal:one')]))
+    const whole = await open()
+    const held = await open()
+    vi.setSystemTime(new Date('2026-11-01T10:00:01.000Z'))
+    await held.change(editEvent('g:cal:one', { title: 'Typed in the held copy', syncState: 'pending' }))
+    await held.save()
+    vi.setSystemTime(new Date('2026-11-01T10:00:02.000Z'))
+    await whole.change(editEvent('g:cal:one', { description: 'From a refresh, later', syncState: 'synced' }))
+    await whole.save()
+    expect(titleOn(fileStore(), 'g:cal:one')).toBe('Typed in the held copy')
+    expect(fileStore().events[0]?.syncState).toBe('pending')
+    expect(whole.store().events[0]?.syncState).toBe('pending')
   })
 })
 

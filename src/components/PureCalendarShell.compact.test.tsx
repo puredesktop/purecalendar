@@ -7,7 +7,7 @@ import { saveCalendarSettings, writeCalendarStoreFile } from '../bridge/platform
 import type { CalendarStore } from '../types'
 import { PureCalendarShell } from './PureCalendarShell'
 
-let neighbour: { tabId: string; name: string } | null = null
+let neighbour: { tabId: string; name: string; heldInRoom?: boolean } | null = null
 vi.mock('@purescience/platform-ui/bridge/react/useAdjacentApp', () => ({ useAdjacentApp: () => neighbour }))
 vi.mock('@purescience/platform-ui/bridge/client', async importOriginal => ({
   ...(await importOriginal<object>()),
@@ -42,7 +42,7 @@ function store(): CalendarStore {
 }
 
 async function render(name: string | null, initial = store()) {
-  neighbour = name === null ? null : { tabId: 'tab-2', name }
+  neighbour = name === null ? null : { tabId: 'tab-2', name, ...(name === 'Executive' ? { heldInRoom: true } : {}) }
   await act(async () => root.render(<PureCalendarShell initialStore={initial} />))
 }
 const query = (selector: string) => host.querySelector<HTMLElement>(selector)

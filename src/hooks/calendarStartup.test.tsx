@@ -14,14 +14,18 @@ import { GoogleCalendarProvider } from '../lib/googleCalendarProvider'
 import { googleExtraCalendarIds, googleRemovedCalendarIds, setGoogleCalendarPreferences } from '../lib/googleCalendarPreferences'
 import { usePureCalendarBoot, type PureCalendarBootState } from './usePureCalendarBoot'
 
-vi.mock('../bridge/platformBridge', () => ({
-  fetchCalendarSettings: vi.fn(),
-  fetchGoogleCredentialStatus: vi.fn(),
-  fetchGoogleAccessToken: vi.fn(),
-  networkFetch: vi.fn(),
-  readCalendarStoreFile: vi.fn(),
-  writeCalendarStoreFile: vi.fn(),
-}))
+vi.mock('../bridge/platformBridge', () => {
+  const readCalendarStoreFile = vi.fn()
+  return {
+    fetchCalendarSettings: vi.fn(),
+    fetchGoogleCredentialStatus: vi.fn(),
+    fetchGoogleAccessToken: vi.fn(),
+    networkFetch: vi.fn(),
+    readCalendarStoreFile,
+    readCalendarStoreFileVersioned: async (file: string) => ({ value: await readCalendarStoreFile(file) }),
+    writeCalendarStoreFile: vi.fn(),
+  }
+})
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 

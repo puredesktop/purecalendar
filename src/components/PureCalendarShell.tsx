@@ -166,6 +166,7 @@ import {
   compactAgendaTitle,
   compactIgnoresCommand,
 } from '../lib/compactAgenda'
+import { useBackgroundWork } from '../hooks/useBackgroundWork'
 import { useCompactInRoom } from '../hooks/useCompactInRoom'
 
 interface PendingCalendarDraft {
@@ -349,24 +350,29 @@ function calendarHandoffErrorMessage(error: unknown): string {
  */
 async function removeConsumedInviteIntent(resourceId: string): Promise<void> {
   try {
-    const result = (await bridge.call(
-      PLATFORM_BRIDGE_METHODS.STORAGE_READ_JSON,
-      [
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const result = (await bridge.call(
+        PLATFORM_BRIDGE_METHODS.STORAGE_READ_JSON,
+        [
+          {
+            appSlug: CALENDAR_INVITE_INTENT_STORAGE_SLUG,
+            fileName: CALENDAR_INVITE_INTENT_STORAGE_FILE,
+          },
+        ],
+      )) as { value?: unknown; version?: string | null } | null
+      const fresh = normalizeCalendarInviteIntentStore(result?.value)
+      if (!(resourceId in fresh.intents)) return
+      // Applied only if the file is still as read: Mail may have added an intent since.
+      const written = (await bridge.call(PLATFORM_BRIDGE_METHODS.STORAGE_WRITE_JSON, [
         {
           appSlug: CALENDAR_INVITE_INTENT_STORAGE_SLUG,
           fileName: CALENDAR_INVITE_INTENT_STORAGE_FILE,
+          value: intentStoreWithoutKey(fresh, resourceId),
+          ...(result?.version !== undefined ? { ifMatch: result.version } : {}),
         },
-      ],
-    )) as { value?: unknown } | null
-    const fresh = normalizeCalendarInviteIntentStore(result?.value)
-    if (!(resourceId in fresh.intents)) return
-    await bridge.call(PLATFORM_BRIDGE_METHODS.STORAGE_WRITE_JSON, [
-      {
-        appSlug: CALENDAR_INVITE_INTENT_STORAGE_SLUG,
-        fileName: CALENDAR_INVITE_INTENT_STORAGE_FILE,
-        value: intentStoreWithoutKey(fresh, resourceId),
-      },
-    ])
+      ])) as { conflict?: boolean } | null
+      if (!written?.conflict) return
+    }
   } catch {
     // Cleanup only — the intent stays until a later consume removes it.
   }
@@ -2481,6 +2487,9 @@ export function PureCalendarShell({
   // is unchanged, and it never touches settings.viewMode.
   const compact = useCompactInRoom()
   const hideInCompact = compact ? ({ display: 'none' } as const) : undefined
+  // A copy held in a page runs beside any normal tab: only that tab syncs, reminds and takes in invites.
+  // What is changed here reaches the file, and that tab sends it on.
+  const background = useBackgroundWork()
   const [store, setStore] = useState(initialStore)
   const latestStoreRef = useRef(store)
   latestStoreRef.current = store
@@ -2528,6 +2537,7 @@ export function PureCalendarShell({
   // would make that open report "payload was not found".
   const inviteSweepBusyRef = useRef(false)
   useEffect(() => {
+    if (!background) return
     const sweep = async (): Promise<void> => {
       if (inviteSweepBusyRef.current) return
       inviteSweepBusyRef.current = true
@@ -2576,7 +2586,7 @@ export function PureCalendarShell({
       window.clearInterval(interval)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [])
+  }, [background])
 
   const [gridDraft, setGridDraft] = useState<GridDraftSelection | null>(null)
   const [dragState, setDragState] = useState<EventDragState | null>(null)
@@ -2584,8 +2594,8 @@ export function PureCalendarShell({
   const [resizeState, setResizeState] = useState<EventResizeState | null>(null)
   const [eventUndoStack, setEventUndoStack] = useState<CalendarEventUndo[]>([])
   const { saveState, lastSavedAt, persistFailure, persistDirtyRef, saveNow } =
-    useCalendarStorePersistence(store)
-  useTeamAvailabilityShare(store)
+    useCalendarStorePersistence(store, setStore)
+  useTeamAvailabilityShare(store, background)
   const [selectedRangeError, setSelectedRangeError] = useState<string | null>(
     null,
   )
@@ -2749,7 +2759,7 @@ export function PureCalendarShell({
   const [refreshError, setRefreshError] = useState<string | null>(null)
   const googleSyncInFlightRef = useRef(false)
   useEffect(() => {
-    if (!calendarProvider) return
+    if (!background || !calendarProvider) return
     if (googleSyncInFlightRef.current) return
     const googleCalendarIds = new Set(
       store.calendars.filter(calendar => calendar.sourceId === 'google-source').map(calendar => calendar.id),
@@ -2787,7 +2797,7 @@ export function PureCalendarShell({
         })
     }, 1200)
     return () => window.clearTimeout(timeout)
-  }, [store, calendarProvider, refreshing, pushRevision])
+  }, [background, store, calendarProvider, refreshing, pushRevision])
 
   // Pull a fresh snapshot from Google and merge it into the current store;
   // without a periodic + manual refresh a day-long session silently drifts
@@ -2818,8 +2828,8 @@ export function PureCalendarShell({
   // Start the first pull only after the saved workspace has mounted. Slow
   // authentication/network requests never hold the calendar behind loading.
   useEffect(() => {
-    void refreshFromProvider()
-  }, [refreshFromProvider])
+    if (background) void refreshFromProvider()
+  }, [background, refreshFromProvider])
 
   // The team calendar (the organisation's, on its server): one more account,
   // looked at and sent to by its own hook.
@@ -2831,6 +2841,7 @@ export function PureCalendarShell({
     onRenamed: (from, to) => setSelectedEventId(current => (current === from ? to : current)),
     onNotice: setTeamNotice,
     holdId: detailsOpen && eventEditing ? selectedEventId : null,
+    enabled: background,
   })
 
   // Find a time: the owner's calendar as it is now — every source behind a
@@ -2915,13 +2926,14 @@ export function PureCalendarShell({
     ]),
   )
   useEffect(() => {
-    void refreshIcsFeeds()
-  }, [feedsKey, refreshIcsFeeds])
+    if (background) void refreshIcsFeeds()
+  }, [background, feedsKey, refreshIcsFeeds])
 
   // Periodic background refresh (every 5 min): the Google account when
   // connected, and the ICS feeds always. Without this a day-long session
   // silently drifts stale.
   useEffect(() => {
+    if (!background) return
     const hasFeeds = (store.settings.icsFeeds ?? []).some(feed =>
       feed.url.trim(),
     )
@@ -2934,7 +2946,7 @@ export function PureCalendarShell({
       5 * 60 * 1000,
     )
     return () => window.clearInterval(interval)
-  }, [calendarProvider, refreshFromProvider, refreshIcsFeeds, feedsKey])
+  }, [background, calendarProvider, refreshFromProvider, refreshIcsFeeds, feedsKey])
 
   // Schedule OS notifications for event reminders through the shell (which
   // owns the timers). Reminders while the app is CLOSED are out of scope.
@@ -2942,7 +2954,7 @@ export function PureCalendarShell({
   // apps' notifications since the shell scheduler is process-wide.
   const scheduledReminderIdsRef = useRef<Set<string>>(new Set())
   useEffect(() => {
-    if (isStandaloneDevMode()) return
+    if (!background || isStandaloneDevMode()) return
     const timeout = window.setTimeout(() => {
       const desired = computeEventReminders(
         store.events,
@@ -2961,7 +2973,7 @@ export function PureCalendarShell({
       scheduledReminderIdsRef.current = desiredIds
     }, 1000)
     return () => window.clearTimeout(timeout)
-  }, [store.events])
+  }, [background, store.events])
 
   // Warn before closing while a save is pending or failed; the debounce above
   // means the last edit can be up to ~800ms behind the disk.

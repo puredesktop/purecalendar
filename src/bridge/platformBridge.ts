@@ -66,10 +66,8 @@ export async function fetchCalendarSettings(): Promise<
 }
 
 /**
- * Persist the full settings object as one write. There is no read step, so
- * two rapid saves cannot interleave a stale read and silently drop each
- * other's fields — the in-memory store.settings is the canonical copy and
- * this simply flushes it.
+ * Persist settings as one write of the keys given, leaving the others alone:
+ * another copy of the app may have changed them (lib/calendarStoreFile.ts).
  */
 export async function saveCalendarSettings(
   settings: Partial<CalendarSettings>,
@@ -95,20 +93,37 @@ export async function readCalendarStoreFile(
   return result?.value ?? null
 }
 
+/** The same read with the file's version, for `ifMatch` on the write. Standalone dev has none. */
+export async function readCalendarStoreFileVersioned(
+  fileName: string,
+): Promise<{ value: unknown; version?: string | null }> {
+  if (isStandaloneDevMode()) return { value: await readCalendarStoreFile(fileName) }
+  const result = (await bridge.call(PLATFORM_BRIDGE_METHODS.STORAGE_READ_JSON, [
+    { appSlug: CALENDAR_APP_SLUG, fileName },
+  ])) as { value?: unknown; version?: string | null } | null
+  return { value: result?.value ?? null, ...(result?.version !== undefined ? { version: result.version } : {}) }
+}
+
+/**
+ * With `ifMatch` (the read's version; null for a file that does not exist yet) the write applies only if the file is still
+ * as read: otherwise nothing is written and the answer says `conflict`.
+ */
 export async function writeCalendarStoreFile(
   fileName: string,
   value: unknown,
-): Promise<void> {
+  ifMatch?: string | null,
+): Promise<{ conflict?: boolean; version?: string | null } | undefined> {
   if (isStandaloneDevMode()) {
     window.localStorage.setItem(
       `purescience:${CALENDAR_APP_SLUG}:${fileName}`,
       JSON.stringify(value),
     )
-    return
+    return undefined
   }
-  await bridge.call(PLATFORM_BRIDGE_METHODS.STORAGE_WRITE_JSON, [
-    { appSlug: CALENDAR_APP_SLUG, fileName, value },
-  ])
+  const result = (await bridge.call(PLATFORM_BRIDGE_METHODS.STORAGE_WRITE_JSON, [
+    { appSlug: CALENDAR_APP_SLUG, fileName, value, ...(ifMatch !== undefined ? { ifMatch } : {}) },
+  ])) as { conflict?: boolean; version?: string | null } | null
+  return result ?? undefined
 }
 
 export async function networkFetch(
