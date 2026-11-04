@@ -171,7 +171,7 @@ import {
 import { useBackgroundWork } from '../hooks/useBackgroundWork'
 import { useCompactInRoom } from '../hooks/useCompactInRoom'
 import { useHeldCommand } from '@purescience/platform-ui/bridge/react/heldCommand'
-import { describeQuickEvent, readHeldView } from '../lib/heldCalendar'
+import { describeQuickEvent, readHeldView, readJoin } from '../lib/heldCalendar'
 
 interface PendingCalendarDraft {
   intent: CalendarDraftIntent
@@ -3364,6 +3364,17 @@ export function PureCalendarShell({
       const event = quickAdd(input)
       if (!event) return { ok: false, say: 'There is no calendar here that can take an event.' }
       return { ok: true, say: describeQuickEvent(event, displayTimeZone) }
+    }
+    if (command === 'join') {
+      const join = readJoin(store, Date.now(), text.trim() || undefined)
+      const at = (startsAt: string): string => `${formatDayInTimeZone(startsAt, displayTimeZone)}, ${formatTimeInTimeZone(startsAt, displayTimeZone)}`
+      if (join.kind === 'open') {
+        void openExternalUrl(join.url)
+        return { ok: true, say: `Opening the call for ${join.title}.` }
+      }
+      if (join.kind === 'no-link') return { ok: false, say: `${join.title} has no call link.` }
+      if (join.kind === 'choose') return { ok: true, say: 'Which one?', choices: join.events.map(event => ({ label: event.title, detail: `${at(event.startsAt)}${event.hasLink ? '' : ', no call link'}`, text: event.key })) }
+      return { ok: true, say: join.next ? `Nothing’s about to start. Next is ${join.next.title}, ${at(join.next.startsAt)}.` : 'Nothing’s about to start, and there’s nothing in the next 30 days.' }
     }
     return { ok: false, say: 'Calendar can’t do that.' }
   })

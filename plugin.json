@@ -20,6 +20,7 @@
     "kind": "calendar",
     "description": "Modern calendar with day, week, month, and agenda views, and task-aware scheduling.",
     "commands": [
+      {"trigger": "/join", "command": "join", "description": "Open the call for the meeting about to start", "background": true, "help": {"says": "Opens the call link for the meeting starting within ten minutes, or already under way. If there’s more than one, you pick.", "example": "/join", "wont": "Only opens the link. It doesn’t change the event or tell anyone."}},
       {"trigger": "/today", "command": "view", "fixedText": "today", "description": "Show today’s calendar", "unattended": "shows", "help": {"says": "Shows today in your calendar.", "example": "/today"}},
       {"trigger": "/week", "command": "view", "fixedText": "week", "description": "Show this week’s calendar", "unattended": "shows", "help": {"says": "Shows this week in your calendar.", "example": "/week"}},
       {"trigger": "/event", "command": "event", "description": "Add a calendar event", "takesText": true, "needsText": true, "textHint": "tomorrow 2:30pm Planning review", "help": {"says": "Reads the words as a date, a time and a title, and opens it as a draft for you to look over.", "example": "/event tomorrow 2:30pm Planning review", "wont": "Doesn’t add it to your calendar or invite anyone until you make it active."}}

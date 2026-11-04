@@ -12,6 +12,7 @@ const held = vi.hoisted(() => ({ handler: null as null | ((command: string, text
 vi.mock('@purescience/platform-ui/bridge/react/heldCommand', () => ({
   useHeldCommand: (handler: (command: string, text: string) => unknown) => { held.handler = handler },
 }))
+vi.mock('@purescience/platform-ui/bridge/os.mjs', async importOriginal => ({ ...(await importOriginal<object>()), openExternalUrl: vi.fn(async () => undefined) }))
 vi.mock('@purescience/platform-ui/bridge/react/useAdjacentApp', () => ({ useAdjacentApp: () => neighbour }))
 vi.mock('@purescience/platform-ui/bridge/client', async importOriginal => ({
   ...(await importOriginal<object>()),
@@ -124,6 +125,14 @@ describe('Calendar answering the page that holds it', () => {
     expect(answer.ok).toBe(false)
     expect(answer.say).toBe('Say when and what, like: tomorrow 2:30pm Planning review.')
     expect(query('[role="dialog"][aria-label="Calendar details"]')).toBeNull()
+  })
+
+  it('/join opens the call the app’s own way, and nothing near says so', async () => {
+    const { openExternalUrl } = await import('@purescience/platform-ui/bridge/os.mjs')
+    const nothing = await tell('join')
+    expect(nothing.ok).toBe(true)
+    expect(nothing.say).toMatch(/Nothing’s about to start/)
+    expect(vi.mocked(openExternalUrl)).not.toHaveBeenCalled()
   })
 
   it('refuses a command it does not know', async () => {
