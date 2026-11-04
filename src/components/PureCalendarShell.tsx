@@ -32,6 +32,7 @@ import {
 } from '../lib/icsFileInvite'
 import { intentStoreWithoutKey } from '../lib/intentConsumption'
 import { Button } from '@purescience/platform-ui/components/common/buttons/Button'
+import { isPersonGesture, releaseButton } from '@purescience/platform-ui/release/gesture'
 import { CALENDAR_SCOPES } from '@purescience/platform-ui/bridge/googleAuth'
 import { ProviderConnection } from '@purescience/platform-ui/components/common/connections/ProviderConnection.js'
 import { PlatformIcon } from '@purescience/platform-ui/components/chrome/PlatformIcon'
@@ -2075,6 +2076,18 @@ const FieldLabel = styled.label`
     width: auto;
     justify-self: start;
   }
+`
+
+const StageRow = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--platform-colors-text);
+  font-size: var(--platform-typography-font-size-sm);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
 `
 
 const ProviderPanel = styled.div`
@@ -6620,27 +6633,37 @@ export function PureCalendarShell({
                             </DetailsFullWidth>
                           )}
                           {!isTeamEvent(selectedEvent) && (
-                          <FieldLabel>
+                          <FieldLabel as="div">
                             Stage
-                            <select
-                              value={
-                                selectedEvent.lifecycle === 'draft'
-                                  ? 'draft'
-                                  : 'active'
-                              }
-                              disabled={selectedEventReadOnly}
-                              onChange={event => {
-                                updateSelectedEvent({
-                                  lifecycle:
-                                    event.target.value === 'draft'
-                                      ? 'draft'
-                                      : 'active',
-                                })
-                              }}
-                            >
-                              <option value="active">Active</option>
-                              <option value="draft">Draft</option>
-                            </select>
+                            {selectedEvent.lifecycle === 'draft' ? (
+                              <StageRow>
+                                Draft
+                                {/* This is the moment listed attendees become real invitees: only a person's own press does it. */}
+                                <Button
+                                  size="sm"
+                                  {...releaseButton('activateCalendarEvent')}
+                                  disabled={selectedEventReadOnly}
+                                  onClick={event => {
+                                    if (!isPersonGesture(event)) return
+                                    updateSelectedEvent({ lifecycle: 'active' })
+                                  }}
+                                >
+                                  Make active
+                                </Button>
+                              </StageRow>
+                            ) : (
+                              <StageRow>
+                                Active
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={selectedEventReadOnly}
+                                  onClick={() => updateSelectedEvent({ lifecycle: 'draft' })}
+                                >
+                                  Back to draft
+                                </Button>
+                              </StageRow>
+                            )}
                           </FieldLabel>
                           )}
                           {!isTeamEvent(selectedEvent) && (

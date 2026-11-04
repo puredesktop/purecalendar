@@ -82,7 +82,7 @@ You will never know another person's availability. The standard procedure:
    others is *pending their reply*, neither complete nor failed; state
    which it is.
 5. **On confirmation**, tell the user the chosen hold is ready to send:
-   they set its Stage to Active in PureCalendar, and that is what turns its
+   they press Make active under its Stage in PureCalendar, and that is what turns its
    listed attendees into invited attendees. You cannot send invitations
    (`activateCalendarEvent` is a release action, see below). Release the
    unused holds (deleting a hold you created yourself, with no guests, at
@@ -221,7 +221,7 @@ otherwise the system time zone is used.
 `activateCalendarEvent` switches a draft to active. This is the moment the
 listed attendees become real invitees — the next provider sync carries
 them, which sends the invitations. It is a **release action**: only a
-person can do it, by setting the event's Stage to Active in PureCalendar,
+person can do it, by pressing Make active under the event's Stage in PureCalendar,
 or by approving it as CEO in the Executive team. You cannot call it at any
 trust level. Get the draft right, then tell the user who it will invite.
 
@@ -264,7 +264,7 @@ error names the last date; search up to it).
 |---|---|
 | "When could I meet Ana (New York) for an hour next week?" | `getCalendarSettings`, then `findMeetingTimes` |
 | "Take option 2" | `createMeetingDraft` with option 2's `startsAt` |
-| "Send it" | Not yours: the user sets the draft's Stage to Active |
+| "Send it" | Not yours: the user presses Make active under the draft's Stage |
 
 ## Editing Events
 

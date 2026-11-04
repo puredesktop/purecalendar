@@ -424,9 +424,9 @@
         },
         {
           "name": "activateCalendarEvent",
-          "releaseButton": "Stage: Active",
+          "releaseButton": "Make active",
           "risk": "release",
-          "description": "Switch a draft event to active. This is the moment listed attendees become real invitees: the next sync carries them to the provider, which sends the invitations. A release action: only a person can do it, by setting the event's Stage to Active in PureCalendar, or by approving it as CEO in the Executive team. An agent cannot call this at any trust level; leave the draft for the person and say it is ready.",
+          "description": "Switch a draft event to active. This is the moment listed attendees become real invitees: the next sync carries them to the provider, which sends the invitations. A release action: only a person can do it, by pressing Make active under the event's Stage in PureCalendar, or by approving it as CEO in the Executive team. An agent cannot call this at any trust level; leave the draft for the person and say it is ready.",
           "inputSchema": {
             "type": "object",
             "properties": {

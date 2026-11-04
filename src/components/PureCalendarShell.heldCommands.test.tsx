@@ -112,8 +112,7 @@ describe('Calendar answering the page that holds it', () => {
     expect(details.textContent).toContain('draft')
     const edit = Array.from(details.querySelectorAll('button')).find(each => each.textContent === 'Edit')!
     await act(async () => edit.click())
-    const stage = Array.from(details.querySelectorAll('select')).find(each => Array.from(each.options).some(option => option.value === 'draft'))!
-    expect(stage.value).toBe('draft')
+    expect(details.querySelector('button[data-release="activateCalendarEvent"]')?.textContent).toBe('Make active')
     // Nothing goes out: the draft stays on this computer until it is set to Active.
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 1000)) })
     for (const method of [provider.sync, provider.createEvent, provider.updateEvent, provider.deleteEvent, provider.rsvp]) expect(method).not.toHaveBeenCalled()
