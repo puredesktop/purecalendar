@@ -169,6 +169,8 @@ import {
 } from '../lib/compactAgenda'
 import { useBackgroundWork } from '../hooks/useBackgroundWork'
 import { useCompactInRoom } from '../hooks/useCompactInRoom'
+import { useHeldCommand } from '@purescience/platform-ui/bridge/react/heldCommand'
+import { describeQuickEvent, readHeldView } from '../lib/heldCalendar'
 
 interface PendingCalendarDraft {
   intent: CalendarDraftIntent
@@ -3304,28 +3306,54 @@ export function PureCalendarShell({
    * still becomes a titled draft at the default hour.
    */
   const [quickAddValue, setQuickAddValue] = useState('')
-  const submitQuickAdd = (): void => {
-    const input = quickAddValue.trim()
-    if (!input) return
+  const quickAdd = (input: string): CalendarEvent | null => {
     const event = quickAddCalendarEvent(store, input, {
       timeZone: displayTimeZone,
     })
     if (!event) {
       setDraftError('No editable calendar is available.')
-      return
+      return null
     }
     setStore(current => ({ ...current, events: [...current.events, event] }))
     recordUserOperation(
       'calendar.event.create',
       `Created draft event "${event.title}" via quick add`,
     )
-    setQuickAddValue('')
-    setAnchorDate(new Date(event.startsAt))
+    // The compact agenda stays on today; the full app goes to the day.
+    if (!compact) setAnchorDate(new Date(event.startsAt))
     setSelectedEventId(event.id)
     setSelectedTaskId(null)
     setDraftError(null)
     setDetailsOpen(true)
+    return event
   }
+  const submitQuickAdd = (): void => {
+    const input = quickAddValue.trim()
+    if (!input) return
+    if (quickAdd(input)) setQuickAddValue('')
+  }
+
+  // Told by the page holding this copy: what the person typed in its box. Each does what the matching button does.
+  useHeldCommand((command, text) => {
+    if (command === 'view') {
+      const wanted = readHeldView(text)
+      if (!wanted) return { ok: false, say: 'Say today or week.' }
+      setDetailsOpen(false)
+      setAnchorDate(new Date())
+      calendarViewportRef.current?.scrollTo?.({ top: 0 })
+      if (compact) return { ok: true, say: wanted === 'today' ? 'Today is at the top of your calendar.' : 'Showing the next seven days.' }
+      changeView(wanted === 'today' ? 'day' : 'week')
+      return { ok: true, say: wanted === 'today' ? 'Showing today.' : 'Showing this week.' }
+    }
+    if (command === 'event') {
+      const input = text.trim()
+      if (!input) return { ok: false, say: 'Say when and what, like: tomorrow 2:30pm Planning review.' }
+      const event = quickAdd(input)
+      if (!event) return { ok: false, say: 'There is no calendar here that can take an event.' }
+      return { ok: true, say: describeQuickEvent(event, displayTimeZone) }
+    }
+    return { ok: false, say: 'Calendar can’t do that.' }
+  })
 
   const createEventOnDay = (
     day: Date,
