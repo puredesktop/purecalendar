@@ -4,6 +4,7 @@ import { EmptyState } from '@purescience/platform-ui/components/common/feedback/
 import { usePlatformBridge } from '@purescience/platform-ui/bridge/react/usePlatformBridge'
 import { usePlatformViewportResource } from '@purescience/platform-ui/bridge/react/usePlatformViewportResource'
 import { PureCalendarShell } from './components/PureCalendarShell'
+import { useCompactInRoom } from './hooks/useCompactInRoom'
 import { useAppAgentTools } from './hooks/useAppAgentTools'
 import { usePureCalendarBoot } from './hooks/usePureCalendarBoot'
 import { setAgentStore } from './agents/handlers'
@@ -17,6 +18,8 @@ export function App(): React.ReactElement {
   const { error: bridgeError, ready, meta } = usePlatformBridge()
   useAppAgentTools(ready)
   const standalone = isStandaloneDevMode()
+  // held in a page: the held look's styles hang off this attribute and nothing else
+  const compactFrame = useCompactInRoom() ? { 'data-compact-room': '' } : undefined
   const appReady = ready || standalone
   const { store, calendarProvider, notice, bootError, retryBoot } =
     usePureCalendarBoot(appReady)
@@ -72,7 +75,7 @@ export function App(): React.ReactElement {
   }
 
   return (
-    <AppFrame>
+    <AppFrame {...compactFrame}>
       <PureCalendarShell
         initialStore={store}
         calendarProvider={calendarProvider}

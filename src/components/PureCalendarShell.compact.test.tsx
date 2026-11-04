@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -152,5 +153,21 @@ describe('PureCalendarShell compact in the room', () => {
     expect(host.textContent).toContain('Board call')
     await key('Delete')
     expect(host.textContent).not.toContain('Board call')
+  })
+
+  it('every held style starts from the compact frame, so none can apply with compact off', () => {
+    const selectors = readFileSync('src/compact-in-room.css', 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').match(/[^{}]+(?=\{)/g) ?? []
+    expect(selectors.length).toBeGreaterThan(10)
+    for (const group of selectors) {
+      let depth = 0, part = ''
+      for (const char of `${group},`) {
+        if (char === '(') depth += 1
+        if (char === ')') depth -= 1
+        if (char === ',' && depth === 0) {
+          expect(part.trim()).toMatch(/^(\[data-compact-room\]|html:has\(\[data-compact-room\]\))/)
+          part = ''
+        } else part += char
+      }
+    }
   })
 })
