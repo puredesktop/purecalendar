@@ -129,6 +129,7 @@ describe('Calendar answering the page that holds it', () => {
 
   it('/join opens the call the app’s own way, and nothing near says so', async () => {
     const { openExternalUrl } = await import('@purescience/platform-ui/bridge/os.mjs')
+    await render()
     const nothing = await tell('join')
     expect(nothing.ok).toBe(true)
     expect(nothing.say).toMatch(/Nothing’s about to start/)
