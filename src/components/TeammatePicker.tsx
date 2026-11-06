@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { styled } from 'styled-components'
 import { X } from 'lucide-react'
-import { Button } from '@purescience/platform-ui/components/common/buttons/Button'
+import { Button } from '../ui/Button'
 import { teammateAddress, teammateId } from '../lib/teamCalendar'
 import type { EventAttendee } from '../types'
 
