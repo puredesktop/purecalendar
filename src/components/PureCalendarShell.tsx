@@ -31,7 +31,7 @@ import {
   parseIcsFileInvite,
 } from '../lib/icsFileInvite'
 import { intentStoreWithoutKey } from '../lib/intentConsumption'
-import { Button } from '@purescience/platform-ui/components/common/buttons/Button'
+import { Button } from '../ui/Button'
 import { isPersonGesture, releaseButton } from '@purescience/platform-ui/release/gesture'
 import { CALENDAR_SCOPES } from '@purescience/platform-ui/bridge/googleAuth'
 import { ProviderConnection } from '@purescience/platform-ui/components/common/connections/ProviderConnection.js'
@@ -410,11 +410,8 @@ const Root = styled.div`
   --calendar-time-gutter-width: 76px;
   --calendar-grid-line: var(--pure-chrome-line);
   --calendar-grid-line-strong: var(--platform-colors-border-strong);
-  --calendar-today-bg: color-mix(
-    in srgb,
-    var(--calendar-accent-fill) 10%,
-    var(--calendar-bg)
-  );
+  /* Today is marked by its heading in Calendar's colour, never a tinted column. */
+  --calendar-today-bg: var(--calendar-bg);
   --calendar-today-text: var(--calendar-accent-fill);
   --calendar-time-rule: color-mix(
     in srgb,
@@ -521,7 +518,7 @@ const DetailsOverlay = styled.section`
   overflow: hidden;
   border: 1px solid
     color-mix(in srgb, var(--platform-colors-border) 82%, transparent);
-  border-radius: 18px;
+  border-radius: var(--pure-chrome-radius, 3px);
   /* Canvas is the system surface colour, so this follows
      light/dark even when the shell's tokens are absent. A dense glass surface
      keeps the event readable above the blurred calendar. */
@@ -760,7 +757,7 @@ const EventReadFacts = styled.dl`
   dt {
     color: var(--platform-colors-text-secondary);
     font-size: var(--platform-typography-font-size-xs);
-    font-family: var(--platform-typography-font-family-mono);
+    font-family: var(--platform-typography-font-family);
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -779,7 +776,7 @@ const EventReadDescription = styled.div`
   margin: 16px 0 0;
   padding: 12px 14px;
   border: 1px solid var(--calendar-grid-line);
-  border-radius: 10px;
+  border-radius: var(--pure-chrome-radius, 3px);
   background: var(--calendar-surface, var(--platform-colors-surface));
   font-size: 13.5px;
   line-height: 1.6;
@@ -1005,7 +1002,7 @@ const Section = styled.section`
 /** A section label: mono, tracked, uppercase — the platform's. */
 const Kicker = styled.div`
   color: var(--pure-chrome-muted);
-  font-family: var(--platform-typography-font-family-mono);
+  font-family: var(--platform-typography-font-family);
   font-size: var(--pure-chrome-label-size);
   font-weight: 500;
   letter-spacing: var(--pure-chrome-label-tracking);
@@ -1245,7 +1242,7 @@ const Checkbox = styled.span<{ $on: boolean; $color: string }>`
   width: 15px;
   height: 15px;
   flex: none;
-  border-radius: 4px;
+  border-radius: var(--pure-chrome-radius, 3px);
   border: 1.5px solid ${({ $color }) => $color};
   background: ${({ $on, $color }) => ($on ? $color : 'transparent')};
   color: #fff;
@@ -1470,7 +1467,7 @@ const MonthDate = styled.div<{ $today?: boolean }>`
         : 'transparent'};
   color: ${({ $today }) => ($today ? 'var(--calendar-today-text)' : 'inherit')};
   font-size: var(--platform-typography-font-size-sm);
-  font-family: var(--platform-typography-font-family-mono);
+  font-family: var(--platform-typography-font-family);
   font-weight: 700;
 `
 
@@ -1480,10 +1477,8 @@ const MonthItem = styled.button<{ $color: string; $draft?: boolean }>`
   overflow: hidden;
   padding: 5px 8px 5px 9px;
   border: 1px solid var(--calendar-grid-line);
-  border-left: 3px solid ${({ $color }) => $color};
   border-radius: 0;
   border-style: ${({ $draft }) => ($draft ? 'dashed' : 'solid')};
-  border-left-style: solid;
   background: ${({ $draft }) =>
     $draft
       ? `repeating-linear-gradient(
@@ -1504,7 +1499,6 @@ const MonthItem = styled.button<{ $color: string; $draft?: boolean }>`
       ${({ $color }) => $color} 34%,
       var(--calendar-grid-line)
     );
-    border-left-color: ${({ $color }) => $color};
   }
 
   strong,
@@ -1521,10 +1515,20 @@ const MonthItem = styled.button<{ $color: string; $draft?: boolean }>`
     line-height: 1.2;
   }
 
+  strong::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    vertical-align: 1px;
+    background: ${({ $color }) => $color};
+  }
+
   div {
     color: var(--calendar-ink-faint);
     font-size: 10px;
-    font-family: var(--platform-typography-font-family-mono);
+    font-family: var(--platform-typography-font-family);
     line-height: 1.2;
   }
 `
@@ -1551,7 +1555,7 @@ const AllDayRail = styled.div`
   background: var(--calendar-surface);
   color: var(--calendar-ink-faint);
   font-size: var(--platform-typography-font-size-xs);
-  font-family: var(--platform-typography-font-family-mono);
+  font-family: var(--platform-typography-font-family);
   font-weight: 600;
   white-space: nowrap;
 `
@@ -1581,10 +1585,8 @@ const AllDayItem = styled.button<{ $color: string; $draft?: boolean }>`
   overflow: hidden;
   padding: 4px 8px 4px 9px;
   border: 1px solid var(--calendar-grid-line);
-  border-left: 3px solid ${({ $color }) => $color};
   border-radius: 0;
   border-style: ${({ $draft }) => ($draft ? 'dashed' : 'solid')};
-  border-left-style: solid;
   background: ${({ $draft }) =>
     $draft
       ? `repeating-linear-gradient(
@@ -1601,6 +1603,15 @@ const AllDayItem = styled.button<{ $color: string; $draft?: boolean }>`
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
+  &::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    vertical-align: 1px;
+    background: ${({ $color }) => $color};
+  }
 `
 
 const TimeRail = styled.div`
@@ -1620,7 +1631,7 @@ const TimeLabel = styled.div<{ $top: number }>`
   box-sizing: border-box;
   color: var(--calendar-ink-faint);
   font-size: var(--platform-typography-font-size-xs);
-  font-family: var(--platform-typography-font-family-mono);
+  font-family: var(--platform-typography-font-family);
   line-height: 1;
   text-align: right;
 `
@@ -1751,7 +1762,7 @@ const NowMarkerLabel = styled.span`
   background: var(--calendar-danger);
   color: var(--platform-colors-text-on-danger, #fff);
   font-size: 10px;
-  font-family: var(--platform-typography-font-family-mono);
+  font-family: var(--platform-typography-font-family);
   font-weight: 600;
   letter-spacing: 0.01em;
 `
@@ -1777,10 +1788,8 @@ const TimedEventBlock = styled.button<{
   padding: ${({ $compact }) =>
     $compact ? '4px 8px 4px 9px' : '8px 9px 6px 9px'};
   border: 1px solid var(--calendar-grid-line);
-  border-left: 3px solid ${({ $color }) => $color};
   border-radius: 0;
   border-style: ${({ $draft }) => ($draft ? 'dashed' : 'solid')};
-  border-left-style: solid;
   background: ${({ $draft }) =>
     $draft
       ? `repeating-linear-gradient(
@@ -1822,11 +1831,21 @@ const TimedEventBlock = styled.button<{
     line-height: 1.15;
   }
 
+  strong::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    vertical-align: 1px;
+    background: ${({ $color }) => $color};
+  }
+
   div {
     display: ${({ $compact }) => ($compact ? 'none' : 'block')};
     color: var(--calendar-ink-faint);
     font-size: 11px;
-    font-family: var(--platform-typography-font-family-mono);
+    font-family: var(--platform-typography-font-family);
     line-height: 1.15;
   }
 
@@ -1836,7 +1855,6 @@ const TimedEventBlock = styled.button<{
       ${({ $color }) => $color} 34%,
       var(--calendar-grid-line)
     );
-    border-left-color: ${({ $color }) => $color};
   }
 
   ${({ $landed, $color }) =>
@@ -1865,7 +1883,6 @@ const TimedEventBlock = styled.button<{
       ${({ $color }) => $color} 52%,
       transparent
     );
-    border-left-color: ${({ $color }) => $color};
     box-shadow: 0 0 0 1px
       color-mix(in srgb, ${({ $color }) => $color} 36%, transparent);
     outline-offset: 0;
@@ -1951,10 +1968,8 @@ const EventBlock = styled.button<{ $color: string; $draft?: boolean }>`
   margin: 8px;
   padding: 10px 10px 10px 11px;
   border: 1px solid var(--calendar-grid-line);
-  border-left: 3px solid ${({ $color }) => $color};
   border-radius: 0;
   border-style: ${({ $draft }) => ($draft ? 'dashed' : 'solid')};
-  border-left-style: solid;
   background: ${({ $draft }) =>
     $draft
       ? `repeating-linear-gradient(
@@ -1975,7 +1990,6 @@ const EventBlock = styled.button<{ $color: string; $draft?: boolean }>`
       ${({ $color }) => $color} 34%,
       var(--calendar-grid-line)
     );
-    border-left-color: ${({ $color }) => $color};
   }
 
   strong,
@@ -1989,10 +2003,19 @@ const EventBlock = styled.button<{ $color: string; $draft?: boolean }>`
   strong {
     white-space: nowrap;
   }
+  strong::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    vertical-align: 1px;
+    background: ${({ $color }) => $color};
+  }
 
   div {
     color: var(--calendar-ink-faint);
-    font-family: var(--platform-typography-font-family-mono);
+    font-family: var(--platform-typography-font-family);
   }
 `
 
