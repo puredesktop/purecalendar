@@ -1,3 +1,12 @@
+/* Follows the desk's theme: each colour is light-dark(its light value, its dark partner), the dark ones the held greys
+   of docs/held-apps.md. A light theme leaves the colour scheme as it was; a dark one says dark, and parts that asked
+   for light take --held-scheme instead. */
+[data-compact-room]:is([data-platform-theme='dark'] *),
+html:has([data-compact-room])[data-platform-theme='dark'] {
+  color-scheme: dark;
+  --held-scheme: dark;
+}
+
 /* The held look for PureCalendar, held inside a page (useCompactInRoom). The frame carries data-compact-room only then,
    and every rule here starts from it, so with compact off nothing in this file applies. Styling only: the agenda, its
    controls and what they do are untouched. */
@@ -11,18 +20,18 @@
 [data-compact-room],
 html:has([data-compact-room]),
 html:has([data-compact-room]) body {
-  background: #ffffff;
+  background: light-dark(#ffffff, #1c1c1c);
 }
 [data-compact-room] [data-app='calendar'] {
-  --calendar-bg: #ffffff;
-  --calendar-page: #ffffff;
-  --calendar-surface: #ffffff;
-  --calendar-surface-muted: #f5f6f8;
-  --calendar-grid-line: #dde1e7;
-  --pure-chrome-bar: #ffffff;
-  --pure-chrome-line: #dde1e7;
+  --calendar-bg: light-dark(#ffffff, #1c1c1c);
+  --calendar-page: light-dark(#ffffff, #1c1c1c);
+  --calendar-surface: light-dark(#ffffff, #1c1c1c);
+  --calendar-surface-muted: light-dark(#f5f6f8, #272727);
+  --calendar-grid-line: light-dark(#dde1e7, #3a3a3a);
+  --pure-chrome-bar: light-dark(#ffffff, #1c1c1c);
+  --pure-chrome-line: light-dark(#dde1e7, #3a3a3a);
   --pure-chrome-inset: 12px;
-  background: #ffffff;
+  background: light-dark(#ffffff, #1c1c1c);
   font-size: 13px;
 }
 
@@ -58,8 +67,8 @@ html:has([data-compact-room]) body {
 }
 [data-compact-room][data-compact-room] [data-app='calendar'] > main > header [aria-label='Calendar range controls'] {
   height: auto;
-  border: 1px solid #cdd1d7;
-  background: #ffffff;
+  border: 1px solid light-dark(#cdd1d7, #4a4a4a);
+  background: light-dark(#ffffff, #1c1c1c);
 }
 [data-compact-room][data-compact-room] [data-app='calendar'] > main > header [aria-label='Calendar range controls'] > button {
   height: 26px;
@@ -69,29 +78,29 @@ html:has([data-compact-room]) body {
   background: transparent;
 }
 [data-compact-room][data-compact-room] [data-app='calendar'] > main > header [aria-label='Calendar range controls'] > button:hover {
-  background: #f5f6f8;
+  background: light-dark(#f5f6f8, #272727);
 }
 [data-compact-room][data-compact-room] [data-app='calendar'] > main > header > div:last-child > button {
   padding: 0 12px;
-  border: 1px solid #1f3a5f;
-  background: #1f3a5f;
-  color: #ffffff;
+  border: 1px solid light-dark(#1f3a5f, #98b8e5);
+  background: light-dark(#1f3a5f, #98b8e5);
+  color: light-dark(#ffffff, #1c1c1c);
 }
 [data-compact-room][data-compact-room] [data-app='calendar'] > main > header > div:last-child > button:hover {
-  background: #1f3a5f;
+  background: light-dark(#1f3a5f, #98b8e5);
   filter: none;
 }
 
 /* The agenda: white to the bottom edge, days divided by hairlines. */
 [data-compact-room] [data-compact-agenda] {
   padding: 0 var(--pure-chrome-inset) 16px;
-  background: #ffffff;
+  background: light-dark(#ffffff, #1c1c1c);
 }
 [data-compact-room] [data-compact-agenda] section {
   padding: 10px 0 8px;
 }
 [data-compact-room] [data-compact-agenda] section + section {
-  border-top: 1px solid #dde1e7;
+  border-top: 1px solid light-dark(#dde1e7, #3a3a3a);
 }
 [data-compact-room] [data-compact-agenda] h2 {
   font-weight: 600;
@@ -101,5 +110,5 @@ html:has([data-compact-room]) body {
   font-variant-numeric: tabular-nums;
 }
 [data-compact-room] [data-compact-agenda] button:hover {
-  background: #f5f6f8;
+  background: light-dark(#f5f6f8, #272727);
 }
