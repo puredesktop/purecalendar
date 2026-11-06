@@ -453,21 +453,12 @@ const Root = styled.div`
     color: var(--platform-colors-text-secondary);
   }
 
+  /* The open view has the shared selected look (hairline round a faint ground, words ink); never an under-bar. */
   && [role='group'][aria-label='Calendar view'] button[aria-pressed='true'] {
-    background: var(--calendar-today-bg);
-    color: var(--calendar-today-text);
-  }
-
-  &&
-    [role='group'][aria-label='Calendar view']
-    button[aria-pressed='true']::after {
-    position: absolute;
-    right: 8px;
-    bottom: 0;
-    left: 8px;
-    height: 2px;
-    background: var(--calendar-accent-fill);
-    content: '';
+    background: var(--p-chosen);
+    box-shadow: var(--p-chosen-edge);
+    color: var(--platform-colors-text);
+    font-weight: 600;
   }
 
   [data-platform-theme='dark'] & {
