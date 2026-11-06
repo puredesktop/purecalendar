@@ -1,10 +1,12 @@
 // Held inside an entry of the Executive room (the page holding this app is not the shell): it lies flat on that page, with
-// no header of its own, as the entry names it. Nothing here applies anywhere else.
+// no header of its own, as the entry names it, white in a light theme and the held greys in a dark one (docs/held-apps.md).
+// Nothing here applies anywhere else.
 if (window.parent !== window.top) {
   document.documentElement.setAttribute('data-held-in-room', '')
   const style = document.createElement('style')
   style.textContent = `
-    html[data-held-in-room], html[data-held-in-room] body, html[data-held-in-room] #root > * { background: #ffffff; border-radius: 0; box-shadow: none; }
+    html[data-held-in-room][data-platform-theme='dark'] { color-scheme: dark; }
+    html[data-held-in-room], html[data-held-in-room] body, html[data-held-in-room] #root > * { background: light-dark(#ffffff, #1c1c1c); border-radius: 0; box-shadow: none; }
     html[data-held-in-room] #root > * > header { display: none; }
   `
   document.head.appendChild(style)
