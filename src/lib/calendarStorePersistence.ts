@@ -234,6 +234,8 @@ export function normalizeCalendar(input: unknown): Calendar | null {
   const sourceId = asString(input.sourceId)
   const name = asString(input.name)
   if (!id || !sourceId || name === undefined) return null
+  const lastSyncedAt = asString(input.lastSyncedAt)
+  const lastSyncError = asString(input.lastSyncError)
   return {
     id,
     sourceId,
@@ -241,6 +243,8 @@ export function normalizeCalendar(input: unknown): Calendar | null {
     color: asString(input.color) ?? '#5b8def',
     visible: input.visible !== false,
     readOnly: input.readOnly === true ? true : undefined,
+    ...(lastSyncedAt ? { lastSyncedAt } : {}),
+    ...(lastSyncError ? { lastSyncError } : {}),
   }
 }
 
@@ -320,6 +324,8 @@ export function normalizeSettings(input: unknown): CalendarSettings {
   }
   const timeZone = asString(input.timeZone)
   if (timeZone) settings.timeZone = timeZone
+  const secondaryTimeZone = asString(input.secondaryTimeZone)
+  if (secondaryTimeZone) settings.secondaryTimeZone = secondaryTimeZone
   // Legacy `google` keys from pre-shell-credential stores are dropped on
   // parse — connection state lives in the shell vault now.
   if (Array.isArray(input.icsFeeds)) {

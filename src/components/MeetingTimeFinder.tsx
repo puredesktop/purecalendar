@@ -15,6 +15,7 @@ import {
   type OwnerCalendarRead,
 } from '../lib/meetingTimes'
 import { teammateAddress } from '../lib/teamCalendar'
+import { systemTimeZone } from '../lib/calendarModel'
 import type { CalendarEvent, CalendarStore } from '../types'
 
 const Panel = styled.aside`
@@ -245,6 +246,8 @@ export interface MeetingTimeFinderProps {
   busyReader: TeamBusyReader | null
   /** Teammates who can be added (their free/busy comes from the team calendar). */
   teammates?: Array<{ id: string; name: string }>
+  /** Owner's active calendar time zone (used as default when adding teammates). */
+  ownerTimeZone?: string
   saveDraft: (event: CalendarEvent, base: CalendarStore) => void
   onOpenDraft: (eventId: string) => void
   onClose: () => void
@@ -268,6 +271,7 @@ export function MeetingTimeFinder({
   readOwner,
   busyReader,
   teammates = [],
+  ownerTimeZone = systemTimeZone(),
   saveDraft,
   onOpenDraft,
   onClose,
@@ -366,6 +370,7 @@ export function MeetingTimeFinder({
 
   const choose = async (option: MeetingOption): Promise<void> => {
     if (!result || choosing) return
+    const version = formVersion.current
     setChoosing(option.startsAt)
     try {
       const done = await meetingDraftFlow.run(result.input, option.startsAt, result.search.availability, {
@@ -374,7 +379,11 @@ export function MeetingTimeFinder({
         saveDraft,
         now,
       })
+      if (formVersion.current !== version) return
       setOutcome({ startsAt: option.startsAt, outcome: done })
+    } catch (error) {
+      if (formVersion.current !== version) return
+      setErrors([error instanceof Error ? error.message : 'Could not create meeting draft.'])
     } finally {
       setChoosing(null)
     }
@@ -462,7 +471,7 @@ export function MeetingTimeFinder({
               Add person
             </Button>
             {unusedTeammates.slice(0, 6).map(mate => (
-              <Button key={mate.id} size="sm" variant="ghost" onClick={() => addPerson({ name: mate.name, email: teammateAddress(mate.id) })}>
+              <Button key={mate.id} size="sm" variant="ghost" onClick={() => addPerson({ name: mate.name, email: teammateAddress(mate.id), timeZone: ownerTimeZone })}>
                 + {mate.name}
               </Button>
             ))}
@@ -477,8 +486,8 @@ export function MeetingTimeFinder({
           </Row>
           {errors.length > 0 && (
             <Errors role="alert" aria-label="Problems">
-              {errors.map(error => (
-                <li key={error}>{error}</li>
+              {errors.map((error, index) => (
+                <li key={`${index}-${error}`}>{error}</li>
               ))}
             </Errors>
           )}
@@ -507,8 +516,8 @@ export function MeetingTimeFinder({
                     </OptionTime>
                     {option.participants.length > 0 && (
                       <Local>
-                        {option.participants.map(slot => (
-                          <li key={slot.label}>
+                        {option.participants.map((slot, slotIndex) => (
+                          <li key={`${slotIndex}-${slot.label}`}>
                             <strong>{slot.label}</strong>
                             <span>{slot.local.text}</span>
                             <Availability $known={slot.availability === 'free'}>{slot.availabilityNote}</Availability>

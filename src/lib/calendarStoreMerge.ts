@@ -261,8 +261,9 @@ export function mergeCalendarStores(input: {
   const calendarIds = new Set(parts.calendars.map(calendar => calendar.id))
   // The file must stay loadable: an event whose calendar is gone cannot be saved beside it.
   parts.events = parts.events.filter(event => calendarIds.has(event.calendarId) && !queued.has(event.id))
-  const { failedCalendarIds: _transient, ...rest } = memory
+  const { failedCalendarIds: _transient, fetchedWindow: _window, ...rest } = memory
   void _transient
+  void _window
   const { removedEventIds: _memoryQueue, ...withoutQueue } = rest
   void _memoryQueue
   return {
@@ -342,7 +343,8 @@ export function applyStoreChanges(current: CalendarStore, changes: StoreChanges)
     const incoming = new Map(arrived.map(record => [record.id, record]))
     const kept: Stored[] = []
     for (const record of current[kind] as Stored[]) {
-      if (removed?.has(record.id)) continue
+      // Only remove records that were NOT modified locally while the merge ran.
+      if (removed?.has(record.id) && (!held || held.get(record.id) === record)) continue
       const newer = incoming.get(record.id)
       if (newer) incoming.delete(record.id)
       kept.push(newer && held?.get(record.id) === record ? newer : record)

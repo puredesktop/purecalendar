@@ -1,5 +1,9 @@
 import type { CalendarCommandId } from './calendarCommands'
-import { dateKeyInTimeZone, instantFromZonedWallTime } from './calendarModel'
+import {
+  dateKeyInTimeZone,
+  instantFromZonedWallTime,
+  parseEventBoundMs,
+} from './calendarModel'
 import type { CalendarEvent, CalendarTask } from '../types'
 
 /** The compact view beside the Executive app: a short agenda of the coming days. */
@@ -45,9 +49,14 @@ export function compactAgendaRange(days: CompactAgendaDay[]): { start: string; e
   return { start: days[0]?.start ?? '', end: days[days.length - 1]?.end ?? '' }
 }
 
-function eventTouchesDay(event: CalendarEvent, day: CompactAgendaDay): boolean {
-  const startsAt = Date.parse(event.startsAt)
-  const endsAt = Date.parse(event.endsAt)
+function eventTouchesDay(
+  event: CalendarEvent,
+  day: CompactAgendaDay,
+  timeZone: string,
+): boolean {
+  const tz = event.timeZone || timeZone
+  const startsAt = parseEventBoundMs(event.startsAt, tz)
+  const endsAt = parseEventBoundMs(event.endsAt, tz)
   const dayStart = Date.parse(day.start)
   const dayEnd = Date.parse(day.end)
   if (startsAt >= dayEnd) return false
@@ -64,13 +73,13 @@ export function compactAgendaItems(
 ): CompactAgendaItem[] {
   const startOf = (item: CompactAgendaItem): number =>
     item.type === 'event'
-      ? Date.parse(item.event.startsAt)
+      ? parseEventBoundMs(item.event.startsAt, item.event.timeZone || timeZone)
       : Date.parse(item.task.scheduledStart ?? item.task.dueAt ?? '')
   const allDay = (item: CompactAgendaItem): number =>
     item.type === 'event' && item.event.allDay ? 0 : 1
   return [
     ...events
-      .filter(event => eventTouchesDay(event, day))
+      .filter(event => eventTouchesDay(event, day, timeZone))
       .map((event): CompactAgendaItem => ({ type: 'event', id: event.id, event })),
     ...tasks
       .filter(task => {

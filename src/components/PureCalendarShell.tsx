@@ -83,6 +83,8 @@ import { calendarCommandForKey } from '../lib/calendarCommands'
 import {
   allDayEventPatch,
   allDayEventsInRange,
+  allDayInclusiveEndDateKey,
+  allDayRangeFromInclusiveDates,
   applyRecurringEventEdit,
   calendarSyncSummary,
   canEditCalendarEvent,
@@ -99,22 +101,25 @@ import {
   firstEditableCalendarId,
   ensureLocalCalendar,
   isLocalCalendar,
+  isValidTimeZone,
   formatTimeInTimeZone,
   instantFromZonedWallTime,
   isAvailableWallTime,
   moveEvent,
   normalizeAvailabilitySettings,
   parseEventAttendeesText,
+  parseEventBoundMs,
   parseEventReminderMinutes,
   quickAddCalendarEvent,
   recoverCalendarEventSync,
   recoverCalendarTaskSync,
   recurrenceBaseEventId,
-  recurrenceInstanceIndex,
+  recurringEditResultId,
   clearDemoData,
   computeEventReminders,
   keepDemoData,
   removeEventWithTombstone,
+  removeRecurringEventOccurrence,
   resolveRsvpAttendee,
   retryCalendarSyncFailures,
   type RecurrenceEditScope,
@@ -135,6 +140,8 @@ import {
 } from '../lib/calendarModel'
 import type { CalendarEventUndo } from '../lib/calendarModel'
 import { readableAccentColor } from '../lib/calendarColors'
+import { describeRecurrenceRule } from '../lib/googleRecurrence'
+import { exportStoreToIcs, importIcsIntoStore, type IcsImportSummary } from '../lib/icsExchange'
 import { GOOGLE_FUTURE_WINDOW_MS, parseGoogleEventLocalId } from '../lib/googleCalendarProvider'
 import { setGoogleCalendarPreferences } from '../lib/googleCalendarPreferences'
 import {
@@ -215,9 +222,12 @@ interface EventResizeState {
 interface EventDragState {
   dayKey: string
   eventId: string
+  moved: boolean
   originalEvent: CalendarEvent
   pointerId: number
   pointerOffsetMinutes: number
+  startClientX: number
+  startClientY: number
   targetDayKey: string
 }
 
@@ -812,9 +822,11 @@ function EventReadBody({
   event,
   calendar,
   timeZone,
+  secondaryTimeZone,
   outsideAvailability,
   rsvpAttendee,
   readOnly,
+  readOnlyReason,
   onRsvp,
   rsvpBusy,
   onOpenMail,
@@ -822,24 +834,32 @@ function EventReadBody({
   event: CalendarEvent
   calendar: Calendar
   timeZone: string
+  secondaryTimeZone?: string | null
   outsideAvailability: boolean
   rsvpAttendee: EventAttendee | undefined
   readOnly: boolean
+  readOnlyReason?: string | null
   rsvpBusy: boolean
   onOpenMail?: () => void
   onRsvp: (response: EventAttendee['response'], email?: string) => void
 }): React.ReactElement {
-  const startDay = dayLabel(new Date(event.startsAt), timeZone)
-  const endDay = dayLabel(new Date(event.endsAt), timeZone)
-  const when = event.allDay
-    ? `${startDay} · All day`
-    : startDay === endDay
-    ? `${startDay} · ${formatTime(event.startsAt, timeZone)} – ${formatTime(event.endsAt, timeZone)}`
-    : `${startDay} ${formatTime(event.startsAt, timeZone)} → ${endDay} ${formatTime(event.endsAt, timeZone)}`
+  const when = formatEventWhen(event, timeZone)
+  const secondaryWhen =
+    !event.allDay && secondaryTimeZone && secondaryTimeZone !== timeZone
+      ? `${formatEventWhen(event, secondaryTimeZone)} · ${secondaryTimeZone}`
+      : null
   const repeat = event.recurrenceRule
-    ? `Repeats ${event.recurrenceRule.interval && event.recurrenceRule.interval > 1 ? `every ${event.recurrenceRule.interval} ` : ''}${event.recurrenceRule.frequency}`
+    ? describeRecurrenceRule(event.recurrenceRule, { timeZone })
     : null
   const joinUrl = eventMeetingUrl(event)
+  let joinHostname = joinUrl ?? ''
+  if (joinUrl) {
+    try {
+      joinHostname = new URL(joinUrl).hostname
+    } catch {
+      joinHostname = joinUrl
+    }
+  }
   const reminder = formatEventReminderMinutes(event.reminders)
   const attendees = event.attendees
     .map(attendee => attendee.name || attendee.email)
@@ -849,6 +869,7 @@ function EventReadBody({
     <div>
       <EventReadTitle>{event.title || 'Untitled event'}</EventReadTitle>
       <EventReadWhen>{when}{!event.allDay && ` · ${timeZone}`}</EventReadWhen>
+      {secondaryWhen && <EventReadSubWhen>{secondaryWhen}</EventReadSubWhen>}
       {(repeat || outsideAvailability) && (
         <EventReadSubWhen>
           {[repeat, outsideAvailability ? 'Outside available hours' : null]
@@ -859,7 +880,9 @@ function EventReadBody({
 
       <EventReadBadgeRow>
         <Badge tone="accent">{calendar.name}</Badge>
-        {calendar.readOnly && <Badge tone="neutral">read-only</Badge>}
+        {(calendar.readOnly || readOnly) && (
+          <Badge tone="neutral">{readOnlyReason ?? 'read-only'}</Badge>
+        )}
         {event.status !== 'confirmed' && (
           <Badge tone="neutral">{event.status}</Badge>
         )}
@@ -918,7 +941,7 @@ function EventReadBody({
                   void openExternalUrl(joinUrl)
                 }}
               >
-                {new URL(joinUrl).hostname}
+                {joinHostname}
               </a>
             </dd>
           </>
@@ -1268,7 +1291,9 @@ const RowAction = styled.button<{ $danger?: boolean }>`
   cursor: pointer;
   opacity: ${({ $danger }) => ($danger ? 1 : 0)};
 
-  ${CalendarManageRow}:hover & {
+  ${CalendarManageRow}:hover &,
+  ${CalendarManageRow}:focus-within &,
+  &:focus-visible {
     opacity: 1;
   }
 
@@ -2243,19 +2268,74 @@ function compactHourLabel(hour: number): string {
   return String(displayHour)
 }
 
+function addDaysToDateKey(dateKey: string, deltaDays: number): string {
+  const [year, month, day] = dateKey.split('-').map(Number)
+  const utc = new Date(Date.UTC(year, month - 1, day + deltaDays))
+  return `${utc.getUTCFullYear().toString().padStart(4, '0')}-${(utc.getUTCMonth() + 1)
+    .toString()
+    .padStart(2, '0')}-${utc.getUTCDate().toString().padStart(2, '0')}`
+}
+
+function isWeekendDateKey(dateKey: string): boolean {
+  const [year, month, day] = dateKey.split('-').map(Number)
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay()
+  return weekday === 0 || weekday === 6
+}
+
+function formatEventWhen(event: CalendarEvent, timeZone: string): string {
+  if (event.allDay) {
+    const allDayZone = isValidTimeZone(event.timeZone)
+      ? event.timeZone
+      : timeZone
+    const startKey = dateKeyInTimeZone(event.startsAt, allDayZone)
+    const endKey = allDayInclusiveEndDateKey(event, allDayZone)
+    const startDay = formatDayInTimeZone(startKey || event.startsAt, allDayZone)
+    if (endKey && endKey > startKey) {
+      const endDay = formatDayInTimeZone(endKey, allDayZone)
+      return `${startDay} – ${endDay} · All day`
+    }
+    return `${startDay} · All day`
+  }
+  const startDay = formatDayInTimeZone(event.startsAt, timeZone)
+  const endDay = formatDayInTimeZone(event.endsAt, timeZone)
+  return startDay === endDay
+    ? `${startDay} · ${formatTime(event.startsAt, timeZone)} – ${formatTime(event.endsAt, timeZone)}`
+    : `${startDay} ${formatTime(event.startsAt, timeZone)} → ${endDay} ${formatTime(event.endsAt, timeZone)}`
+}
+
+function readOnlyReasonForEvent(
+  calendar: Calendar | null | undefined,
+  event: CalendarEvent | null | undefined,
+): string | null {
+  if (calendar?.id.startsWith('ics:') || calendar?.sourceId === 'ics-feeds') {
+    return 'Subscribed feed'
+  }
+  if (calendar?.readOnly) {
+    return 'Shared calendar (read-only)'
+  }
+  if (event?.team && event.team.mayEdit === false) {
+    return 'Organized by teammate'
+  }
+  return null
+}
+
 function calendarRangeTitle(
   view: CalendarView,
   anchor: Date,
   days: Date[],
+  timeZone: string,
 ): { title: string; year: string } {
+  const safeZone = isValidTimeZone(timeZone) ? timeZone : undefined
   if (view === 'month') {
     return {
-      title: new Intl.DateTimeFormat(undefined, { month: 'long' }).format(
-        anchor,
-      ),
-      year: new Intl.DateTimeFormat(undefined, { year: 'numeric' }).format(
-        anchor,
-      ),
+      title: new Intl.DateTimeFormat(undefined, {
+        month: 'long',
+        ...(safeZone ? { timeZone: safeZone } : {}),
+      }).format(anchor),
+      year: new Intl.DateTimeFormat(undefined, {
+        year: 'numeric',
+        ...(safeZone ? { timeZone: safeZone } : {}),
+      }).format(anchor),
     }
   }
   if (view === 'day') {
@@ -2263,10 +2343,12 @@ function calendarRangeTitle(
       title: new Intl.DateTimeFormat(undefined, {
         month: 'short',
         day: 'numeric',
+        ...(safeZone ? { timeZone: safeZone } : {}),
       }).format(anchor),
-      year: new Intl.DateTimeFormat(undefined, { year: 'numeric' }).format(
-        anchor,
-      ),
+      year: new Intl.DateTimeFormat(undefined, {
+        year: 'numeric',
+        ...(safeZone ? { timeZone: safeZone } : {}),
+      }).format(anchor),
     }
   }
   const first = days[0] ?? anchor
@@ -2274,15 +2356,22 @@ function calendarRangeTitle(
   const firstLabel = new Intl.DateTimeFormat(undefined, {
     month: 'short',
     day: 'numeric',
+    ...(safeZone ? { timeZone: safeZone } : {}),
   }).format(first)
-  const sameMonth = first.getMonth() === last.getMonth()
+  const firstMonth = dateKeyInTimeZone(first, timeZone).slice(0, 7)
+  const lastMonth = dateKeyInTimeZone(last, timeZone).slice(0, 7)
+  const sameMonth = firstMonth === lastMonth
   const lastLabel = new Intl.DateTimeFormat(undefined, {
     month: sameMonth ? undefined : 'short',
     day: 'numeric',
+    ...(safeZone ? { timeZone: safeZone } : {}),
   }).format(last)
   return {
     title: `${firstLabel} - ${lastLabel}`,
-    year: new Intl.DateTimeFormat(undefined, { year: 'numeric' }).format(last),
+    year: new Intl.DateTimeFormat(undefined, {
+      year: 'numeric',
+      ...(safeZone ? { timeZone: safeZone } : {}),
+    }).format(last),
   }
 }
 
@@ -2316,15 +2405,16 @@ function formatNowTime(date: Date, timeZone: string): string {
   return formatTimeInTimeZone(date.toISOString(), timeZone)
 }
 
-function monthGridDays(anchor: Date): Date[] {
-  const firstOfMonth = new Date(anchor.getFullYear(), anchor.getMonth(), 1)
-  const mondayOffset = (firstOfMonth.getDay() + 6) % 7
-  const firstCell = new Date(firstOfMonth)
-  firstCell.setDate(firstOfMonth.getDate() - mondayOffset)
+function monthGridDays(anchor: Date, timeZone: string): Date[] {
+  const anchorKey = dateKeyInTimeZone(anchor, timeZone)
+  const [year, month] = anchorKey.split('-').map(Number)
+  const firstKey = `${year.toString().padStart(4, '0')}-${month.toString().padStart(2, '0')}-01`
+  const firstWeekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay()
+  const mondayOffset = (firstWeekday + 6) % 7
+  const firstCellKey = addDaysToDateKey(firstKey, -mondayOffset)
   return Array.from({ length: 42 }, (_, index) => {
-    const day = new Date(firstCell)
-    day.setDate(firstCell.getDate() + index)
-    return day
+    const key = addDaysToDateKey(firstCellKey, index)
+    return new Date(instantFromZonedWallTime(key, 12, 0, timeZone))
   })
 }
 
@@ -2338,12 +2428,8 @@ function startOfDayIso(day: Date, timeZone: string): string {
 }
 
 function endOfDayIso(day: Date, timeZone: string): string {
-  return instantFromZonedWallTime(
-    dateKeyInTimeZone(day, timeZone),
-    23,
-    59,
-    timeZone,
-  )
+  const nextDayKey = addDaysToDateKey(dateKeyInTimeZone(day, timeZone), 1)
+  return instantFromZonedWallTime(nextDayKey, 0, 0, timeZone)
 }
 
 function toDateTimeLocalValue(
@@ -2422,10 +2508,17 @@ function layoutTimedItems(
 ): TimedItemLayout[] {
   const sorted = [
     ...events.map(event => {
-      const startMinutes = minutesFromIso(event.startsAt, timeZone)
-      const endMinutes = Math.max(
-        startMinutes + MIN_EVENT_MINUTES,
-        minutesFromIso(event.endsAt, timeZone),
+      const startDayKey = dateKeyInTimeZone(event.startsAt, timeZone)
+      const endDayKey = dateKeyInTimeZone(event.endsAt, timeZone)
+      const startMinutes =
+        startDayKey < dayKey ? 0 : minutesFromIso(event.startsAt, timeZone)
+      const rawEndMinutes =
+        endDayKey > dayKey
+          ? DAY_END_HOUR * 60
+          : minutesFromIso(event.endsAt, timeZone)
+      const endMinutes = Math.min(
+        DAY_END_HOUR * 60,
+        Math.max(startMinutes + MIN_EVENT_MINUTES, rawEndMinutes),
       )
       return { type: 'event' as const, event, startMinutes, endMinutes }
     }),
@@ -2512,17 +2605,7 @@ function selectedEventIdForRecurringScope(
   event: CalendarEvent,
   scope: RecurrenceEditScope,
 ): string {
-  if (scope === 'this') {
-    return `${recurrenceBaseEventId(event.id)}_only_${recurrenceInstanceIndex(
-      event.id,
-    )}`
-  }
-  if (scope === 'following') {
-    return `${recurrenceBaseEventId(
-      event.id,
-    )}_following_${recurrenceInstanceIndex(event.id)}`
-  }
-  return recurrenceBaseEventId(event.id)
+  return recurringEditResultId(event.id, scope)
 }
 
 export function PureCalendarShell({
@@ -2660,6 +2743,20 @@ export function PureCalendarShell({
   const [searchQuery, setSearchQuery] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
+  const searchBoxRef = useRef<HTMLDivElement | null>(null)
+  const detailsOverlayRef = useRef<HTMLDivElement | null>(null)
+  const detailsTriggerRef = useRef<HTMLElement | null>(null)
+  const wasDetailsOpenRef = useRef(false)
+  const forceEditOnOpenRef = useRef<string | null>(null)
+  const didDragRef = useRef(false)
+  const [monthOverflowDayKey, setMonthOverflowDayKey] = useState<string | null>(null)
+  const [icsImportSummary, setIcsImportSummary] = useState<IcsImportSummary | null>(null)
+  const [icsExportError, setIcsExportError] = useState<string | null>(null)
+  const [icsExportCalendarId, setIcsExportCalendarId] = useState<string>('all')
+  const [icsExportFrom, setIcsExportFrom] = useState<string>('')
+  const [icsExportTo, setIcsExportTo] = useState<string>('')
+  const icsFileInputRef = useRef<HTMLInputElement | null>(null)
+  const [copiedJoinLink, setCopiedJoinLink] = useState(false)
   const timedBodyRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const calendarViewportRef = useRef<HTMLDivElement | null>(null)
   const landedEventTimeoutRef = useRef<number | null>(null)
@@ -2707,11 +2804,19 @@ export function PureCalendarShell({
     [store.settings],
   )
   const displayTimeZone = timeZoneConfig.timeZone
+  const secondaryTimeZone =
+    store.settings.secondaryTimeZone &&
+    isValidTimeZone(store.settings.secondaryTimeZone) &&
+    store.settings.secondaryTimeZone !== displayTimeZone
+      ? store.settings.secondaryTimeZone
+      : null
   const compactDays = useMemo(
     () => (compact ? compactAgendaDays(anchorDate, displayTimeZone) : []),
     [anchorDate, compact, displayTimeZone],
   )
-  const range = compact ? compactAgendaRange(compactDays) : weekRange(anchorDate)
+  const range = compact
+    ? compactAgendaRange(compactDays)
+    : weekRange(anchorDate, displayTimeZone)
   const visibleEvents = useMemo(
     () => visibleCalendarEvents(store, range.start, range.end),
     [range.end, range.start, store],
@@ -2767,14 +2872,14 @@ export function PureCalendarShell({
     range.end,
     store.calendars,
   )
-  const days = Array.from(
-    { length: 7 },
-    (_, index) =>
-      new Date(Date.parse(range.start) + index * 24 * 60 * 60 * 1000),
-  )
+  const rangeStartKey = dateKeyInTimeZone(range.start, displayTimeZone)
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const key = addDaysToDateKey(rangeStartKey, index)
+    return new Date(instantFromZonedWallTime(key, 12, 0, displayTimeZone))
+  })
   const headerRange = compact
     ? compactAgendaTitle(compactDays, displayTimeZone)
-    : calendarRangeTitle(view, anchorDate, days)
+    : calendarRangeTitle(view, anchorDate, days, displayTimeZone)
   const searchResults = useMemo(
     () => searchCalendarStore(store, searchQuery),
     [searchQuery, store],
@@ -2793,20 +2898,70 @@ export function PureCalendarShell({
     return () => window.clearInterval(timer)
   }, [])
 
-  // Clear the two-step delete confirmation whenever the details overlay
-  // closes, so a stale "Confirm delete" never greets the next event opened.
+  // Clear transient UI states and manage dialog focus when the details overlay
+  // opens or closes (restore focus to the triggering element on close).
   useEffect(() => {
-    if (!detailsOpen) setPendingEventDelete(false)
+    if (detailsOpen && !wasDetailsOpenRef.current) {
+      detailsTriggerRef.current =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null
+      window.requestAnimationFrame(() => {
+        detailsOverlayRef.current?.focus()
+      })
+    } else if (!detailsOpen && wasDetailsOpenRef.current) {
+      setPendingEventDelete(false)
+      setSelectedRangeError(null)
+      setCopiedJoinLink(false)
+      const trigger = detailsTriggerRef.current
+      detailsTriggerRef.current = null
+      if (trigger && trigger.isConnected) {
+        trigger.focus()
+      }
+    }
+    wasDetailsOpenRef.current = detailsOpen
   }, [detailsOpen])
 
-  // On opening a different event: a titled, editable event shows its read
-  // view first; a fresh untitled one (just created) opens in edit; a
-  // read-only event never edits.
+  // Clear stale inline errors when switching to a different event.
   useEffect(() => {
+    setSelectedRangeError(null)
+    setCopiedJoinLink(false)
+  }, [selectedEvent?.id])
+
+  // On opening a different event: newly created events open straight into
+  // edit mode; existing titled events open in read view first; read-only
+  // events never edit.
+  useEffect(() => {
+    const forced =
+      selectedEvent?.id != null &&
+      forceEditOnOpenRef.current === selectedEvent.id
+    if (forced) forceEditOnOpenRef.current = null
     setEventEditing(
-      !selectedEventReadOnly && !(selectedEvent?.title ?? '').trim().length,
+      !selectedEventReadOnly &&
+        (forced || !(selectedEvent?.title ?? '').trim().length),
     )
   }, [selectedEvent?.id, selectedEventReadOnly])
+
+  // Close search dropdown when clicking outside the search box.
+  useEffect(() => {
+    if (!searchOpen) return
+    const handleOutside = (event: PointerEvent): void => {
+      if (
+        searchBoxRef.current &&
+        event.target instanceof Node &&
+        !searchBoxRef.current.contains(event.target)
+      ) {
+        setSearchOpen(false)
+      }
+    }
+    window.addEventListener('pointerdown', handleOutside)
+    return () => window.removeEventListener('pointerdown', handleOutside)
+  }, [searchOpen])
+
+  // Close month overflow popover whenever view or anchor changes.
+  useEffect(() => {
+    setMonthOverflowDayKey(null)
+  }, [view, anchorDate])
 
   // Push active pending edits; private drafts stay local until activation.
   const [pushRevision, setPushRevision] = useState(0)
@@ -3061,38 +3216,13 @@ export function PureCalendarShell({
     if (viewport) viewport.scrollTop = 0
   }, [compact, compactFirstDay])
 
+  // Reset armed calendar removal state whenever the calendars drawer closes.
   useEffect(() => {
-    if (
-      !detailsOpen &&
-      !calendarPanelOpen &&
-      !settingsOpen &&
-      !gridDraft &&
-      !dragState &&
-      !resizeState
-    )
-      return
-
-    const closeOpenDrawer = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      setGridDraft(null)
-      setDragState(null)
-      setResizeState(null)
-      setDetailsOpen(false)
-      setCalendarPanelOpen(false)
-      setSettingsOpen(false)
+    if (!calendarPanelOpen) {
+      setCalendarRemoveArmedId(null)
+      setCalendarEditId(null)
     }
-
-    window.addEventListener('keydown', closeOpenDrawer)
-    return () => window.removeEventListener('keydown', closeOpenDrawer)
-  }, [
-    calendarPanelOpen,
-    detailsOpen,
-    dragState,
-    gridDraft,
-    resizeState,
-    settingsOpen,
-  ])
+  }, [calendarPanelOpen])
 
   useEffect(
     () => () => {
@@ -3322,6 +3452,7 @@ export function PureCalendarShell({
       'calendar.event.create',
       `Created draft event starting ${event.startsAt}`,
     )
+    forceEditOnOpenRef.current = event.id
     setSelectedEventId(event.id)
     setSelectedTaskId(null)
     setDetailsOpen(true)
@@ -3441,6 +3572,7 @@ export function PureCalendarShell({
       `Created draft event starting ${startsAt}`,
     )
     if (!compact) setAnchorDate(new Date(startsAt))
+    forceEditOnOpenRef.current = event.id
     setSelectedEventId(event.id)
     setSelectedTaskId(null)
     setSelectedRangeError(null)
@@ -3467,6 +3599,9 @@ export function PureCalendarShell({
         selectedEvent,
         recurrenceEditScope,
       )
+      if (eventEditing) {
+        forceEditOnOpenRef.current = nextSelectedEventId
+      }
       setStore(current => ({
         ...current,
         events: applyRecurringEventEdit(
@@ -3894,16 +4029,88 @@ export function PureCalendarShell({
     })
   }
 
+  const handleImportIcsFile = async (file: File): Promise<void> => {
+    try {
+      const text = await file.text()
+      const currentStore = latestStoreRef.current
+      const existingEditable = firstEditableCalendarId(currentStore)
+      const target = existingEditable
+        ? { store: currentStore, calendarId: existingEditable }
+        : ensureLocalCalendar(currentStore)
+      const { store: nextStore, summary } = importIcsIntoStore(
+        target.store,
+        text,
+        target.calendarId,
+        displayTimeZone,
+      )
+      setStore(nextStore)
+      setIcsImportSummary(summary)
+      if (summary.added > 0 || summary.updated > 0) {
+        recordUserOperation(
+          'calendar.ics.import',
+          `Imported ${summary.added} added, ${summary.updated} updated from "${file.name}"`,
+        )
+      }
+    } catch (error) {
+      setIcsImportSummary({
+        added: 0,
+        updated: 0,
+        skipped: 0,
+        failed: 1,
+        errors: [
+          error instanceof Error ? error.message : 'Could not read .ics file.',
+        ],
+      })
+    }
+  }
+
+  const handleExportScopedIcs = (): void => {
+    setIcsExportError(null)
+    const exported = exportStoreToIcs(store, {
+      calendarId: icsExportCalendarId,
+      ...(icsExportFrom ? { startDate: icsExportFrom } : {}),
+      ...(icsExportTo ? { endDate: icsExportTo } : {}),
+      timeZone: displayTimeZone,
+    })
+    void saveTextFile(exported.ics, {
+      defaultName: exported.fileName,
+      filters: [{ name: 'iCalendar', extensions: ['ics'] }],
+    })
+      .then(saved => {
+        if (saved) {
+          recordUserOperation(
+            'calendar.ics.export',
+            `Exported ${exported.count} event(s) as .ics`,
+          )
+        }
+      })
+      .catch(error => {
+        setIcsExportError(
+          error instanceof Error
+            ? `Could not export .ics: ${error.message}`
+            : 'Could not export .ics.',
+        )
+      })
+  }
+
   const deleteSelectedEvent = (): void => {
     if (!selectedEvent) return
     if (!canEditCalendarEvent(store, selectedEvent)) {
       setSelectedRangeError('This calendar is read-only.')
       return
     }
-    // removeEventWithTombstone also records a tombstone for provider-backed
-    // events, so the delete reaches Google via the sync loop and the next
-    // snapshot merge cannot resurrect the event.
-    setStore(current => removeEventWithTombstone(current, selectedEvent.id))
+    // For recurring series, honour recurrenceEditScope ('this' excludes one
+    // occurrence, 'following' truncates, 'all' removes the base event with a
+    // provider tombstone).
+    setStore(current =>
+      selectedEvent.recurrenceRule
+        ? removeRecurringEventOccurrence(
+            current,
+            selectedEvent,
+            recurrenceEditScope,
+          )
+        : removeEventWithTombstone(current, selectedEvent.id),
+    )
     recordUserOperation(
       'calendar.event.delete',
       `Deleted event "${selectedEvent.title}"`,
@@ -4303,8 +4510,11 @@ export function PureCalendarShell({
     setDragState({
       dayKey,
       eventId: eventItem.id,
+      moved: false,
       originalEvent: eventItem,
       pointerId: pointerEvent.pointerId,
+      startClientX: pointerEvent.clientX,
+      startClientY: pointerEvent.clientY,
       targetDayKey: dayKey,
       pointerOffsetMinutes: Math.max(
         0,
@@ -4348,15 +4558,24 @@ export function PureCalendarShell({
 
     const onPointerMove = (event: PointerEvent): void => {
       if (event.pointerId !== dragState.pointerId) return
-      if (dragState.originalEvent.recurrenceRule) return
+      const movedEnough =
+        dragState.moved ||
+        Math.hypot(
+          event.clientX - dragState.startClientX,
+          event.clientY - dragState.startClientY,
+        ) >= 4
+      if (!movedEnough) return
       const position = pointerDayPosition(event.clientX, event.clientY)
       if (!position) return
       setDragState(current =>
         current && current.pointerId === event.pointerId
-          ? { ...current, targetDayKey: position.dayKey }
+          ? { ...current, moved: true, targetDayKey: position.dayKey }
           : current,
       )
-      const eventItem = store.events.find(item => item.id === dragState.eventId)
+      if (dragState.originalEvent.recurrenceRule) return
+      const eventItem = latestStoreRef.current.events.find(
+        item => item.id === dragState.eventId,
+      )
       if (!eventItem) return
       const durationMinutes = Math.max(
         MIN_EVENT_MINUTES,
@@ -4383,48 +4602,68 @@ export function PureCalendarShell({
 
     const onPointerUp = (event: PointerEvent): void => {
       if (event.pointerId !== dragState.pointerId) return
+      const movedEnough =
+        dragState.moved ||
+        Math.hypot(
+          event.clientX - dragState.startClientX,
+          event.clientY - dragState.startClientY,
+        ) >= 4
       if (dragState.originalEvent.recurrenceRule) {
-        const position = pointerDayPosition(event.clientX, event.clientY)
-        if (position) {
-          const durationMinutes = Math.max(
-            MIN_EVENT_MINUTES,
-            Math.round(
-              (Date.parse(dragState.originalEvent.endsAt) -
-                Date.parse(dragState.originalEvent.startsAt)) /
-                60_000,
-            ),
-          )
-          const startMinutes = Math.max(
-            DAY_START_HOUR * 60,
-            Math.min(
-              DAY_END_HOUR * 60 - durationMinutes,
-              position.minutes - dragState.pointerOffsetMinutes,
-            ),
-          )
-          const startsAt = instantFromZonedWallTime(
-            position.dayKey,
-            Math.floor(startMinutes / 60),
-            startMinutes % 60,
-            displayTimeZone,
-          )
-          commitRecurringEventEdit(dragState.originalEvent, {
-            startsAt,
-            endsAt: new Date(
-              Date.parse(startsAt) + durationMinutes * 60_000,
-            ).toISOString(),
-            timeZone: displayTimeZone,
-          })
-          showDropConnected(dragState.eventId)
+        if (movedEnough) {
+          const position = pointerDayPosition(event.clientX, event.clientY)
+          if (position) {
+            const durationMinutes = Math.max(
+              MIN_EVENT_MINUTES,
+              Math.round(
+                (Date.parse(dragState.originalEvent.endsAt) -
+                  Date.parse(dragState.originalEvent.startsAt)) /
+                  60_000,
+              ),
+            )
+            const startMinutes = Math.max(
+              DAY_START_HOUR * 60,
+              Math.min(
+                DAY_END_HOUR * 60 - durationMinutes,
+                position.minutes - dragState.pointerOffsetMinutes,
+              ),
+            )
+            const startsAt = instantFromZonedWallTime(
+              position.dayKey,
+              Math.floor(startMinutes / 60),
+              startMinutes % 60,
+              displayTimeZone,
+            )
+            if (startsAt !== dragState.originalEvent.startsAt) {
+              didDragRef.current = true
+              window.requestAnimationFrame(() => {
+                didDragRef.current = false
+              })
+              commitRecurringEventEdit(dragState.originalEvent, {
+                startsAt,
+                endsAt: new Date(
+                  Date.parse(startsAt) + durationMinutes * 60_000,
+                ).toISOString(),
+                timeZone: displayTimeZone,
+              })
+              showDropConnected(dragState.eventId)
+            }
+          }
         }
         setDragState(null)
         return
       }
-      const eventItem = store.events.find(item => item.id === dragState.eventId)
+      const eventItem = latestStoreRef.current.events.find(
+        item => item.id === dragState.eventId,
+      )
       rememberGestureUndo('move', dragState.originalEvent, eventItem)
       if (
         eventItem &&
         eventItem.startsAt !== dragState.originalEvent.startsAt
       ) {
+        didDragRef.current = true
+        window.requestAnimationFrame(() => {
+          didDragRef.current = false
+        })
         showDropConnected(dragState.eventId)
       }
       setDragState(null)
@@ -4438,7 +4677,7 @@ export function PureCalendarShell({
       window.removeEventListener('pointerup', onPointerUp)
       window.removeEventListener('pointercancel', onPointerUp)
     }
-  }, [displayTimeZone, dragState, recurrenceEditScope, store.events])
+  }, [displayTimeZone, dragState, recurrenceEditScope])
 
   useEffect(() => {
     if (!resizeState) return
@@ -4544,7 +4783,9 @@ export function PureCalendarShell({
       rememberGestureUndo(
         'resize',
         resizeState.originalEvent,
-        store.events.find(item => item.id === resizeState.eventId),
+        latestStoreRef.current.events.find(
+          item => item.id === resizeState.eventId,
+        ),
       )
       setResizeState(null)
     }
@@ -4567,20 +4808,123 @@ export function PureCalendarShell({
   const keydownHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {})
   keydownHandlerRef.current = (event: KeyboardEvent): void => {
     const target = event.target as HTMLElement | null
-    if (
+    const inEditableField =
       target instanceof HTMLInputElement ||
       target instanceof HTMLTextAreaElement ||
-      target?.isContentEditable
-    ) {
+      target instanceof HTMLSelectElement ||
+      Boolean(target?.isContentEditable)
+
+    // Allow Escape to close dialogs even when focus is inside a field inside
+    // the dialog — unless the field itself already handled Escape (defaultPrevented).
+    if (event.key === 'Escape') {
+      if (event.defaultPrevented) return
+      if (
+        !gridDraft &&
+        !dragState &&
+        !resizeState &&
+        !monthOverflowDayKey &&
+        !searchOpen &&
+        !detailsOpen &&
+        !meetingFinderOpen &&
+        !calendarPanelOpen &&
+        !settingsOpen
+      ) {
+        return
+      }
+      event.preventDefault()
+      if (gridDraft || dragState || resizeState) {
+        if (dragState && !dragState.originalEvent.recurrenceRule) {
+          const orig = dragState.originalEvent
+          setStore(current => ({
+            ...current,
+            events: current.events.map(e => (e.id === orig.id ? orig : e)),
+          }))
+        }
+        if (resizeState && !resizeState.originalEvent.recurrenceRule) {
+          const orig = resizeState.originalEvent
+          setStore(current => ({
+            ...current,
+            events: current.events.map(e => (e.id === orig.id ? orig : e)),
+          }))
+        }
+        setGridDraft(null)
+        setDragState(null)
+        setResizeState(null)
+        return
+      }
+      if (monthOverflowDayKey) {
+        setMonthOverflowDayKey(null)
+        return
+      }
+      if (searchOpen) {
+        setSearchOpen(false)
+        return
+      }
+      if (detailsOpen) {
+        void saveNow()
+        setDetailsOpen(false)
+        return
+      }
+      if (meetingFinderOpen) {
+        setMeetingFinderOpen(false)
+        return
+      }
+      if (calendarPanelOpen) {
+        setCalendarPanelOpen(false)
+        return
+      }
+      if (settingsOpen) {
+        setSettingsOpen(false)
+      }
+      return
+    }
+
+    if (inEditableField) {
       return
     }
 
     const command = calendarCommandForKey(event.key, {
       ctrlKey: event.ctrlKey,
       metaKey: event.metaKey,
+      altKey: event.altKey,
+      shiftKey: event.shiftKey,
     })
     if (!command) return
     if (compact && compactIgnoresCommand(command, detailsOpen)) return
+
+    // Do not let background grid/navigation shortcuts fire behind an open modal/panel.
+    const modalOpen = detailsOpen || settingsOpen || meetingFinderOpen
+    if (
+      modalOpen &&
+      command !== 'close-inspector' &&
+      command !== 'undo-last-change' &&
+      !(command === 'delete-selected-event' && detailsOpen)
+    ) {
+      return
+    }
+
+    if (command === 'delete-selected-event') {
+      if (
+        settingsOpen ||
+        meetingFinderOpen ||
+        calendarPanelOpen ||
+        pendingInvite ||
+        pendingDraft ||
+        selectedTask ||
+        !selectedEvent ||
+        selectedEventReadOnly
+      ) {
+        return
+      }
+      event.preventDefault()
+      if (detailsOpen && !pendingEventDelete) {
+        setPendingEventDelete(true)
+        return
+      }
+      deleteSelectedEvent()
+      return
+    }
+
     event.preventDefault()
 
     if (command === 'new-event') createEvent()
@@ -4591,16 +4935,7 @@ export function PureCalendarShell({
     if (command === 'today') setAnchorDate(new Date())
     if (command === 'previous-range') shiftRange(-1)
     if (command === 'next-range') shiftRange(1)
-    if (command === 'close-inspector') {
-      setGridDraft(null)
-      setDragState(null)
-      setResizeState(null)
-      setDetailsOpen(false)
-      setCalendarPanelOpen(false)
-      setSettingsOpen(false)
-    }
     if (command === 'undo-last-change') undoLastEventChange()
-    if (command === 'delete-selected-event') deleteSelectedEvent()
     if (command === 'view-day') changeView('day')
     if (command === 'view-week') changeView('week')
     if (command === 'view-month') changeView('month')
@@ -4637,9 +4972,7 @@ export function PureCalendarShell({
                 <EventSurfaceTitle event={event} local={isLocalCalendar(store, event.calendarId)} />
                 <div>
                   {isDraftEvent(event) ? 'Draft · ' : ''}
-                  {dayLabel(new Date(event.startsAt), displayTimeZone)} ·{' '}
-                  {formatTime(event.startsAt, displayTimeZone)} to{' '}
-                  {formatTime(event.endsAt, displayTimeZone)}
+                  {formatEventWhen(event, displayTimeZone)}
                 </div>
               </AgendaRow>
             )
@@ -4648,7 +4981,7 @@ export function PureCalendarShell({
       )
     }
     if (view === 'month') {
-      const monthDays = monthGridDays(anchorDate)
+      const monthDays = monthGridDays(anchorDate, displayTimeZone)
       const monthStart = startOfDayIso(
         monthDays[0] ?? anchorDate,
         displayTimeZone,
@@ -4664,21 +4997,55 @@ export function PureCalendarShell({
         monthEnd,
         store.calendars,
       )
-      const weekdayLabels = monthDays
-        .slice(0, 7)
-        .map(day =>
-          new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(day),
-        )
+      const safeZone = isValidTimeZone(displayTimeZone)
+        ? displayTimeZone
+        : undefined
+      const weekdayLabels = monthDays.slice(0, 7).map(day =>
+        new Intl.DateTimeFormat(undefined, {
+          weekday: 'short',
+          ...(safeZone ? { timeZone: safeZone } : {}),
+        }).format(day),
+      )
+      const anchorMonthKey = dateKeyInTimeZone(anchorDate, displayTimeZone).slice(
+        0,
+        7,
+      )
       const today = new Date()
+      const MONTH_CELL_LIMIT = 3
       return (
         <MonthGrid>
-          {weekdayLabels.map(label => (
-            <MonthWeekday key={label}>{label}</MonthWeekday>
+          {weekdayLabels.map((label, idx) => (
+            <MonthWeekday key={`${idx}-${label}`}>{label}</MonthWeekday>
           ))}
           {monthDays.map(day => {
             const key = dateKeyInTimeZone(day, displayTimeZone)
-            const muted = day.getMonth() !== anchorDate.getMonth()
+            const dayStartMs = Date.parse(startOfDayIso(day, displayTimeZone))
+            const dayEndMs = Date.parse(endOfDayIso(day, displayTimeZone))
+            const muted = key.slice(0, 7) !== anchorMonthKey
             const isToday = sameDate(day, today, displayTimeZone)
+            const dayEvents = monthEvents.filter(event => {
+              const startMs = parseEventBoundMs(event.startsAt, displayTimeZone)
+              const endMs = parseEventBoundMs(event.endsAt, displayTimeZone)
+              if (Number.isNaN(startMs)) return false
+              if (Number.isNaN(endMs) || endMs <= startMs) {
+                return startMs >= dayStartMs && startMs < dayEndMs
+              }
+              return startMs < dayEndMs && endMs > dayStartMs
+            })
+            const dayTasks = monthTasks.filter(task => {
+              const startsAt = task.scheduledStart ?? task.dueAt
+              return startsAt
+                ? dateKeyInTimeZone(startsAt, displayTimeZone) === key
+                : false
+            })
+            const totalItems = dayEvents.length + dayTasks.length
+            const visibleDayEvents = dayEvents.slice(0, MONTH_CELL_LIMIT)
+            const remainingSlots = Math.max(
+              0,
+              MONTH_CELL_LIMIT - visibleDayEvents.length,
+            )
+            const visibleDayTasks = dayTasks.slice(0, remainingSlots)
+            const overflowCount = Math.max(0, totalItems - MONTH_CELL_LIMIT)
             return (
               <MonthCell
                 key={key}
@@ -4686,9 +5053,11 @@ export function PureCalendarShell({
                 tabIndex={0}
                 $muted={muted}
                 $today={isToday}
-                title={`Create an event on ${dayLabel(day, displayTimeZone)}`}
+                aria-label={`Create an event on ${dayLabel(day, displayTimeZone)}`}
+                style={{ position: 'relative' }}
                 onClick={() => createEventOnDay(day)}
                 onKeyDown={keyEvent => {
+                  if (keyEvent.target !== keyEvent.currentTarget) return
                   if (keyEvent.key === 'Enter' || keyEvent.key === ' ') {
                     keyEvent.preventDefault()
                     createEventOnDay(day)
@@ -4698,58 +5067,148 @@ export function PureCalendarShell({
                 <MonthDate $today={isToday}>
                   {Number(key.slice(8, 10))}
                 </MonthDate>
-                {monthEvents
-                  .filter(
-                    event =>
-                      dateKeyInTimeZone(event.startsAt, displayTimeZone) ===
-                      key,
+                {visibleDayEvents.map(event => {
+                  const calendar = store.calendars.find(
+                    item => item.id === event.calendarId,
                   )
-                  .map(event => {
-                    const calendar = store.calendars.find(
-                      item => item.id === event.calendarId,
-                    )
-                    return (
-                      <MonthItem
-                        key={event.id}
-                        {...eventRefs(event)}
-                        $color={calendarCategoryColor(calendar)}
-                        $draft={isDraftEvent(event)}
-                        onClick={click => {
-                          click.stopPropagation()
-                          setSelectedEventId(event.id)
-                          setSelectedTaskId(null)
-                          setDetailsOpen(true)
-                        }}
-                      >
-                        <EventSurfaceTitle event={event} local={isLocalCalendar(store, event.calendarId)} />
-                        <div>
-                          {isDraftEvent(event) ? 'Draft · ' : ''}
-                          {formatTime(event.startsAt, displayTimeZone)} to{' '}
-                          {formatTime(event.endsAt, displayTimeZone)}
-                        </div>
-                      </MonthItem>
-                    )
-                  })}
-                {monthTasks
-                  .filter(task => {
-                    const startsAt = task.scheduledStart ?? task.dueAt
-                    return startsAt
-                      ? dateKeyInTimeZone(startsAt, displayTimeZone) === key
-                      : false
-                  })
-                  .map(task => (
+                  const tooltip = `${event.title || 'Untitled event'} · ${formatEventWhen(event, displayTimeZone)}${calendar ? ` · ${calendar.name}` : ''}`
+                  return (
                     <MonthItem
-                      key={task.id}
-                      $color={EVENT_CATEGORY_COLORS.tasks}
+                      key={event.id}
+                      {...eventRefs(event)}
+                      $color={calendarCategoryColor(calendar)}
+                      $draft={isDraftEvent(event)}
+                      title={tooltip}
                       onClick={click => {
                         click.stopPropagation()
-                        openTaskDetail(task)
+                        setSelectedEventId(event.id)
+                        setSelectedTaskId(null)
+                        setDetailsOpen(true)
                       }}
                     >
-                      <strong>{task.title}</strong>
-                      <div>Task · {task.sourceLabel}</div>
+                      <EventSurfaceTitle
+                        event={event}
+                        local={isLocalCalendar(store, event.calendarId)}
+                      />
+                      <div>
+                        {isDraftEvent(event) ? 'Draft · ' : ''}
+                        {event.allDay
+                          ? 'All day'
+                          : `${formatTime(event.startsAt, displayTimeZone)} to ${formatTime(event.endsAt, displayTimeZone)}`}
+                      </div>
                     </MonthItem>
-                  ))}
+                  )
+                })}
+                {visibleDayTasks.map(task => (
+                  <MonthItem
+                    key={task.id}
+                    $color={EVENT_CATEGORY_COLORS.tasks}
+                    title={`${task.title} · Task (${task.sourceLabel})`}
+                    onClick={click => {
+                      click.stopPropagation()
+                      openTaskDetail(task)
+                    }}
+                  >
+                    <strong>{task.title}</strong>
+                    <div>Task · {task.sourceLabel}</div>
+                  </MonthItem>
+                ))}
+                {overflowCount > 0 && (
+                  <LinkButton
+                    type="button"
+                    aria-expanded={monthOverflowDayKey === key}
+                    onClick={click => {
+                      click.stopPropagation()
+                      setMonthOverflowDayKey(current =>
+                        current === key ? null : key,
+                      )
+                    }}
+                  >
+                    +{overflowCount} more
+                  </LinkButton>
+                )}
+                {monthOverflowDayKey === key && (
+                  <div
+                    role="dialog"
+                    aria-label={`All items on ${dayLabel(day, displayTimeZone)}`}
+                    onClick={click => click.stopPropagation()}
+                    style={{
+                      position: 'absolute',
+                      top: 28,
+                      left: 4,
+                      right: 4,
+                      zIndex: 30,
+                      maxHeight: 240,
+                      overflowY: 'auto',
+                      padding: 8,
+                      borderRadius: 'var(--platform-radius-sm)',
+                      border: '1px solid var(--platform-colors-border)',
+                      background: 'var(--platform-colors-surface)',
+                      boxShadow: '0 8px 24px rgb(0 0 0 / 0.16)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 4,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: 4,
+                      }}
+                    >
+                      <strong>{dayLabel(day, displayTimeZone)}</strong>
+                      <LinkButton
+                        type="button"
+                        onClick={() => setMonthOverflowDayKey(null)}
+                      >
+                        Close
+                      </LinkButton>
+                    </div>
+                    {dayEvents.map(event => {
+                      const calendar = store.calendars.find(
+                        item => item.id === event.calendarId,
+                      )
+                      return (
+                        <MonthItem
+                          key={`pop-${event.id}`}
+                          $color={calendarCategoryColor(calendar)}
+                          $draft={isDraftEvent(event)}
+                          onClick={() => {
+                            setMonthOverflowDayKey(null)
+                            setSelectedEventId(event.id)
+                            setSelectedTaskId(null)
+                            setDetailsOpen(true)
+                          }}
+                        >
+                          <EventSurfaceTitle
+                            event={event}
+                            local={isLocalCalendar(store, event.calendarId)}
+                          />
+                          <div>
+                            {event.allDay
+                              ? 'All day'
+                              : `${formatTime(event.startsAt, displayTimeZone)} – ${formatTime(event.endsAt, displayTimeZone)}`}
+                          </div>
+                        </MonthItem>
+                      )
+                    })}
+                    {dayTasks.map(task => (
+                      <MonthItem
+                        key={`pop-${task.id}`}
+                        $color={EVENT_CATEGORY_COLORS.tasks}
+                        onClick={() => {
+                          setMonthOverflowDayKey(null)
+                          openTaskDetail(task)
+                        }}
+                      >
+                        <strong>{task.title}</strong>
+                        <div>Task · {task.sourceLabel}</div>
+                      </MonthItem>
+                    ))}
+                  </div>
+                )}
               </MonthCell>
             )
           })}
@@ -4774,12 +5233,31 @@ export function PureCalendarShell({
 
     return (
       <TimeGrid $days={displayDays.length} $timelineHeight={timelineHeight}>
-        <TimeHeaderSpacer />
+        <TimeHeaderSpacer
+          title={
+            secondaryTimeZone
+              ? `Primary: ${displayTimeZone} · Secondary: ${secondaryTimeZone}`
+              : undefined
+          }
+        >
+          {secondaryTimeZone ? (
+            <span
+              style={{
+                fontSize: 10,
+                color: 'var(--platform-colors-text-secondary)',
+                padding: '0 4px',
+              }}
+            >
+              {secondaryTimeZone.split('/').pop()?.replace(/_/g, ' ')}
+            </span>
+          ) : null}
+        </TimeHeaderSpacer>
         {displayDays.map(day => {
+          const dayKey = dateKeyInTimeZone(day, displayTimeZone)
           const isToday = sameDate(day, now, displayTimeZone)
-          const isWeekend = day.getDay() === 0 || day.getDay() === 6
+          const isWeekend = isWeekendDateKey(dayKey)
           return (
-            <TimedDayHeader key={`${day.toISOString()}-header`}>
+            <TimedDayHeader key={`${dayKey}-header`}>
               <TimedDayHeaderInner $today={isToday} $weekend={isWeekend}>
                 {dayLabel(day, displayTimeZone)}
               </TimedDayHeaderInner>
@@ -4790,7 +5268,7 @@ export function PureCalendarShell({
         {displayDays.map(day => {
           const key = dateKeyInTimeZone(day, displayTimeZone)
           const isToday = sameDate(day, now, displayTimeZone)
-          const isWeekend = day.getDay() === 0 || day.getDay() === 6
+          const isWeekend = isWeekendDateKey(key)
           const dayAllDayEvents = allDayEventsInRange(
             allDayEvents,
             startOfDayIso(day, displayTimeZone),
@@ -4812,6 +5290,7 @@ export function PureCalendarShell({
                     {...eventRefs(event)}
                     $color={calendarCategoryColor(calendar)}
                     $draft={isDraftEvent(event)}
+                    title={`${event.title || 'Untitled event'} · ${formatEventWhen(event, displayTimeZone)}${calendar ? ` · ${calendar.name}` : ''}`}
                     onClick={() => {
                       setSelectedRangeError(null)
                       setSelectedEventId(event.id)
@@ -4827,22 +5306,54 @@ export function PureCalendarShell({
           )
         })}
         <TimeRail>
-          {hours.map(hour => (
-            <TimeLabel key={hour} $top={hour * HOUR_HEIGHT}>
-              {compactHourLabel(hour)}
-            </TimeLabel>
-          ))}
+          {hours.map(hour => {
+            const secondaryLabel = secondaryTimeZone
+              ? formatTimeInTimeZone(
+                  instantFromZonedWallTime(
+                    dateKeyInTimeZone(displayDays[0] ?? anchorDate, displayTimeZone),
+                    hour,
+                    0,
+                    displayTimeZone,
+                  ),
+                  secondaryTimeZone,
+                )
+              : null
+            return (
+              <TimeLabel key={hour} $top={hour * HOUR_HEIGHT}>
+                {compactHourLabel(hour)}
+                {secondaryLabel ? (
+                  <span
+                    style={{
+                      display: 'block',
+                      fontSize: 9,
+                      opacity: 0.72,
+                      lineHeight: 1.1,
+                    }}
+                  >
+                    {secondaryLabel}
+                  </span>
+                ) : null}
+              </TimeLabel>
+            )
+          })}
         </TimeRail>
         {displayDays.map(day => {
           const key = dateKeyInTimeZone(day, displayTimeZone)
+          const dayStartMs = Date.parse(startOfDayIso(day, displayTimeZone))
+          const dayEndMs = Date.parse(endOfDayIso(day, displayTimeZone))
           const isToday = sameDate(day, now, displayTimeZone)
-          const isWeekend = day.getDay() === 0 || day.getDay() === 6
+          const isWeekend = isWeekendDateKey(key)
+          const [keyYear, keyMonth, keyDay] = key.split('-').map(Number)
+          const dayWeekday = new Date(
+            Date.UTC(keyYear, keyMonth - 1, keyDay),
+          ).getUTCDay()
+          const dayIsAvailable = availability.availableDays.includes(dayWeekday)
           return (
             <TimedDayColumn
               key={key}
               $today={isToday}
               $weekend={isWeekend}
-              title={`Create an event on ${dayLabel(day, displayTimeZone)}`}
+              aria-label={`Schedule for ${dayLabel(day, displayTimeZone)}`}
             >
               <TimedDayBody
                 ref={element => {
@@ -4857,12 +5368,11 @@ export function PureCalendarShell({
                 {hours.map(hour => (
                   <AvailabilityBand
                     key={`${key}-${hour}`}
-                    $available={isAvailableWallTime(
-                      store.settings,
-                      day,
-                      hour,
-                      displayTimeZone,
-                    )}
+                    $available={
+                      dayIsAvailable &&
+                      hour >= availability.availableStartHour &&
+                      hour < availability.availableEndHour
+                    }
                     style={{ top: hour * HOUR_HEIGHT, height: HOUR_HEIGHT }}
                     aria-hidden="true"
                   />
@@ -4887,12 +5397,22 @@ export function PureCalendarShell({
                   </TimedDraftBlock>
                 )}
                 {layoutTimedItems(
-                  visibleEvents.filter(
-                    event =>
-                      !event.allDay &&
-                      dateKeyInTimeZone(event.startsAt, displayTimeZone) ===
-                        key,
-                  ),
+                  visibleEvents.filter(event => {
+                    if (event.allDay) return false
+                    const startMs = parseEventBoundMs(
+                      event.startsAt,
+                      displayTimeZone,
+                    )
+                    const endMs = parseEventBoundMs(
+                      event.endsAt,
+                      displayTimeZone,
+                    )
+                    if (Number.isNaN(startMs)) return false
+                    if (Number.isNaN(endMs) || endMs <= startMs) {
+                      return startMs >= dayStartMs && startMs < dayEndMs
+                    }
+                    return startMs < dayEndMs && endMs > dayStartMs
+                  }),
                   scheduledTasks.filter(task => {
                     const startsAt = task.scheduledStart ?? task.dueAt
                     return startsAt
@@ -4910,6 +5430,7 @@ export function PureCalendarShell({
                         data-calendar-event
                         $color={EVENT_CATEGORY_COLORS.tasks}
                         $compact={compact}
+                        title={`${task.title} · Task (${task.sourceLabel})`}
                         style={style}
                         onClick={click => {
                           click.stopPropagation()
@@ -4928,6 +5449,10 @@ export function PureCalendarShell({
                   const selected = event.id === selectedEventId
                   const dragging = dragState?.eventId === event.id
                   const landed = landedEventId === event.id
+                  const isSingleDay =
+                    dateKeyInTimeZone(event.startsAt, displayTimeZone) ===
+                    dateKeyInTimeZone(event.endsAt, displayTimeZone)
+                  const tooltip = `${event.title || 'Untitled event'} · ${formatEventWhen(event, displayTimeZone)}${calendar ? ` · ${calendar.name}` : ''}`
                   return (
                     <TimedEventBlock
                       key={event.id}
@@ -4939,19 +5464,21 @@ export function PureCalendarShell({
                       $dragging={dragging}
                       $landed={landed}
                       $draft={isDraftEvent(event)}
+                      title={tooltip}
                       style={style}
                       onPointerDown={pointerEvent =>
                         beginEventDrag(event, key, pointerEvent)
                       }
                       onClick={click => {
                         click.stopPropagation()
+                        if (didDragRef.current) return
                         setSelectedRangeError(null)
                         setSelectedEventId(event.id)
                         setSelectedTaskId(null)
                         setDetailsOpen(true)
                       }}
                     >
-                      {selected && (
+                      {selected && isSingleDay && (
                         <ResizeHandle
                           data-resize-handle
                           $edge="start"
@@ -4968,7 +5495,7 @@ export function PureCalendarShell({
                         {formatTime(event.startsAt, displayTimeZone)} to{' '}
                         {formatTime(event.endsAt, displayTimeZone)}
                       </div>
-                      {selected && (
+                      {selected && isSingleDay && (
                         <ResizeHandle
                           data-resize-handle
                           $edge="end"
@@ -5025,6 +5552,7 @@ export function PureCalendarShell({
                   submitQuickAdd()
                 }
                 if (event.key === 'Escape') {
+                  event.preventDefault()
                   setQuickAddValue('')
                   event.currentTarget.blur()
                 }
@@ -5051,6 +5579,9 @@ export function PureCalendarShell({
               onClick={() => setCalendarPanelOpen(true)}
             >
               Calendars
+              {store.calendars.filter(c => !c.visible).length > 0
+                ? ` (${store.calendars.filter(c => !c.visible).length} hidden)`
+                : ''}
             </Button>
             <RangeControls aria-label="Calendar range controls">
               <Button size="sm" onClick={() => shiftRange(-1)}>
@@ -5063,13 +5594,14 @@ export function PureCalendarShell({
                 Next
               </Button>
             </RangeControls>
-            {calendarProvider && (
+            {(calendarProvider ||
+              (store.settings.icsFeeds?.length ?? 0) > 0) && (
               <Button
                 size="sm"
                 variant="subtle"
                 disabled={refreshing}
                 onClick={() => {
-                  void refreshFromProvider()
+                  if (calendarProvider) void refreshFromProvider()
                   void refreshIcsFeeds()
                 }}
                 title={
@@ -5078,7 +5610,9 @@ export function PureCalendarShell({
                         new Date(lastSyncedAt).toISOString(),
                         displayTimeZone,
                       )}`
-                    : 'Sync with Google Calendar'
+                    : calendarProvider
+                      ? 'Sync with Google Calendar'
+                      : 'Refresh subscribed calendar feeds'
                 }
               >
                 {refreshing ? 'Syncing…' : 'Refresh'}
@@ -5099,7 +5633,7 @@ export function PureCalendarShell({
             />
           </ToolbarGroup>
           <ToolbarGroup>
-            <SearchBox>
+            <SearchBox ref={searchBoxRef}>
               <SearchInput
                 ref={searchInputRef}
                 value={searchQuery}
@@ -5110,6 +5644,7 @@ export function PureCalendarShell({
                 onFocus={() => setSearchOpen(true)}
                 onKeyDown={event => {
                   if (event.key === 'Escape') {
+                    event.preventDefault()
                     setSearchOpen(false)
                     event.currentTarget.blur()
                   }
@@ -5353,8 +5888,25 @@ export function PureCalendarShell({
             </StatusBandItem>
           )}
           <StatusBandItem $tone="rest">
-            {visibleEvents.length} event
-            {visibleEvents.length === 1 ? '' : 's'} this week
+            {(() => {
+              let count = visibleEvents.length
+              let label = 'this week'
+              if (view === 'day') {
+                const dayStart = startOfDayIso(anchorDate, displayTimeZone)
+                const dayEnd = endOfDayIso(anchorDate, displayTimeZone)
+                count = visibleCalendarEvents(store, dayStart, dayEnd).length
+                label = sameDate(anchorDate, now, displayTimeZone)
+                  ? 'today'
+                  : `on ${dayLabel(anchorDate, displayTimeZone)}`
+              } else if (view === 'month') {
+                const mDays = monthGridDays(anchorDate, displayTimeZone)
+                const mStart = startOfDayIso(mDays[0] ?? anchorDate, displayTimeZone)
+                const mEnd = endOfDayIso(mDays[mDays.length - 1] ?? anchorDate, displayTimeZone)
+                count = visibleCalendarEvents(store, mStart, mEnd).length
+                label = 'this month'
+              }
+              return `${count} event${count === 1 ? '' : 's'} ${label}`
+            })()}
           </StatusBandItem>
         </StatusBand>
       </Main>
@@ -5367,6 +5919,7 @@ export function PureCalendarShell({
           readOwner={readMeetingOwner}
           busyReader={meetingBusyReader}
           teammates={team.meta ? team.meta.people.filter(person => person.id !== team.meta!.me.id) : []}
+          ownerTimeZone={displayTimeZone}
           saveDraft={saveMeetingDraft}
           onOpenDraft={eventId => {
             const draft = latestStoreRef.current.events.find(item => item.id === eventId)
@@ -5408,8 +5961,40 @@ export function PureCalendarShell({
               </div>
             </Section>
             <Section>
-              <Kicker>Calendars</Kicker>
-              {store.calendars.map(calendar => (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                }}
+              >
+                <Kicker>Calendars</Kicker>
+                {store.calendars.some(c => !c.visible) && (
+                  <LinkButton
+                    type="button"
+                    onClick={() =>
+                      setStore(current => ({
+                        ...current,
+                        calendars: current.calendars.map(c => ({
+                          ...c,
+                          visible: true,
+                        })),
+                      }))
+                    }
+                  >
+                    Show all
+                  </LinkButton>
+                )}
+              </div>
+              {store.calendars.map(calendar => {
+                const reason = readOnlyReasonForEvent(calendar, null)
+                const syncMeta = calendar.lastSyncError
+                  ? `Sync error: ${calendar.lastSyncError}`
+                  : calendar.lastSyncedAt
+                    ? `Synced ${formatTimeInTimeZone(calendar.lastSyncedAt, displayTimeZone)}`
+                    : null
+                return (
                 <CalendarManageRow key={calendar.id} {...calendarRefs(calendar)}>
                   <CalendarToggle
                     type="button"
@@ -5436,7 +6021,22 @@ export function PureCalendarShell({
                     </Checkbox>
                     <CalendarName $dim={!calendar.visible}>
                       {calendar.name}
-                      {calendar.readOnly ? <ReadOnlyMark>read-only</ReadOnlyMark> : null}
+                      {calendar.readOnly ? (
+                        <ReadOnlyMark>{reason ?? 'read-only'}</ReadOnlyMark>
+                      ) : null}
+                      {syncMeta ? (
+                        <span
+                          style={{
+                            display: 'block',
+                            fontSize: 11,
+                            color: calendar.lastSyncError
+                              ? 'var(--platform-colors-danger-text)'
+                              : 'var(--platform-colors-text-secondary)',
+                          }}
+                        >
+                          {syncMeta}
+                        </span>
+                      ) : null}
                     </CalendarName>
                   </CalendarToggle>
                   <RowAction
@@ -5476,7 +6076,10 @@ export function PureCalendarShell({
                         aria-label="Calendar name"
                         defaultValue={calendar.name}
                         onKeyDown={event => {
-                          if (event.key === 'Escape') setCalendarEditId(null)
+                          if (event.key === 'Escape') {
+                            event.preventDefault()
+                            setCalendarEditId(null)
+                          }
                           if (event.key !== 'Enter') return
                           setStore(current =>
                             updateCalendar(current, calendar.id, {
@@ -5517,7 +6120,8 @@ export function PureCalendarShell({
                     </CalendarEditPanel>
                   )}
                 </CalendarManageRow>
-              ))}
+                )
+              })}
 
               {addCalendarMode === null ? (
                 <AddRow>
@@ -5563,7 +6167,10 @@ export function PureCalendarShell({
                       setAddCalendarDraft(event.currentTarget.value)
                     }
                     onKeyDown={event => {
-                      if (event.key === 'Escape') closeAddCalendar()
+                      if (event.key === 'Escape') {
+                        event.preventDefault()
+                        closeAddCalendar()
+                      }
                       if (event.key !== 'Enter') return
                       if (addCalendarMode === 'google') {
                         void addGoogleCalendarById(addCalendarDraft)
@@ -5619,6 +6226,116 @@ export function PureCalendarShell({
                 </CalendarEditPanel>
               )}
             </Section>
+            <Section>
+              <Kicker>Import &amp; Export (.ics)</Kicker>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
+                <div>
+                  <input
+                    ref={icsFileInputRef}
+                    type="file"
+                    accept=".ics,text/calendar"
+                    style={{ display: 'none' }}
+                    onChange={event => {
+                      const file = event.target.files?.[0]
+                      if (file) void handleImportIcsFile(file)
+                      event.target.value = ''
+                    }}
+                  />
+                  <Button
+                    size="sm"
+                    variant="subtle"
+                    onClick={() => icsFileInputRef.current?.click()}
+                  >
+                    Import .ics file
+                  </Button>
+                </div>
+                {icsImportSummary && (
+                  <div
+                    role="status"
+                    style={{
+                      fontSize: 'var(--pure-chrome-ui-size)',
+                      color:
+                        icsImportSummary.failed > 0 &&
+                        icsImportSummary.added === 0 &&
+                        icsImportSummary.updated === 0
+                          ? 'var(--platform-colors-danger-text)'
+                          : 'var(--platform-colors-text-secondary)',
+                    }}
+                  >
+                    Imported: {icsImportSummary.added} added,{' '}
+                    {icsImportSummary.updated} updated,{' '}
+                    {icsImportSummary.skipped} skipped
+                    {icsImportSummary.failed > 0
+                      ? `, ${icsImportSummary.failed} failed`
+                      : ''}
+                    .{' '}
+                    <LinkButton
+                      type="button"
+                      onClick={() => setIcsImportSummary(null)}
+                    >
+                      Dismiss
+                    </LinkButton>
+                    {icsImportSummary.errors.length > 0 && (
+                      <div style={{ marginTop: 4 }}>
+                        {icsImportSummary.errors.slice(0, 3).join(' ')}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <label style={{ fontSize: 'var(--pure-chrome-ui-size)' }}>
+                    Export calendar
+                    <select
+                      aria-label="Export calendar scope"
+                      value={icsExportCalendarId}
+                      onChange={event =>
+                        setIcsExportCalendarId(event.target.value)
+                      }
+                      style={{ display: 'block', width: '100%', marginTop: 4 }}
+                    >
+                      <option value="all">All visible calendars</option>
+                      {store.calendars.map(calendar => (
+                        <option key={calendar.id} value={calendar.id}>
+                          {calendar.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <label style={{ flex: 1, fontSize: 'var(--pure-chrome-ui-size)' }}>
+                      From
+                      <EditField
+                        type="date"
+                        aria-label="Export start date"
+                        value={icsExportFrom}
+                        onChange={event => setIcsExportFrom(event.target.value)}
+                      />
+                    </label>
+                    <label style={{ flex: 1, fontSize: 'var(--pure-chrome-ui-size)' }}>
+                      To
+                      <EditField
+                        type="date"
+                        aria-label="Export end date"
+                        value={icsExportTo}
+                        onChange={event => setIcsExportTo(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <div>
+                    <Button
+                      size="sm"
+                      variant="subtle"
+                      onClick={handleExportScopedIcs}
+                    >
+                      Export .ics
+                    </Button>
+                  </div>
+                  {icsExportError && (
+                    <ErrorNote role="alert">{icsExportError}</ErrorNote>
+                  )}
+                </div>
+              </div>
+            </Section>
         </CalendarDrawer>
       )}
 
@@ -5627,19 +6344,6 @@ export function PureCalendarShell({
         { id: 'timezone', label: 'Timezone', description: 'Choose the timezone for display and event editing. Stored event times are unchanged.' },
         { id: 'providers', label: 'Accounts & calendars', description: 'Connect calendars and manage provider access. Credentials are kept in the shell vault.' },
       ]}>
-            <Section id="providers">
-              <Title>Calendar settings</Title>
-              <p
-                style={{
-                  color: 'var(--platform-colors-text-secondary)',
-                  marginTop: 8,
-                }}
-              >
-                Configure provider access here. Public Google settings are
-                stored with the app; client secrets and OAuth tokens stay in the
-                shell vault.
-              </p>
-            </Section>
             <Section id="availability">
               <Kicker>Availability</Kicker>
               <ProviderPanel>
@@ -5850,9 +6554,63 @@ export function PureCalendarShell({
                     ))}
                   </datalist>
                 </label>
+                <label>
+                  <span style={{ display: 'block', marginBottom: 6 }}>
+                    Secondary timezone (optional)
+                  </span>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      list="purecalendar-timezones"
+                      placeholder="e.g. Europe/London"
+                      value={store.settings.secondaryTimeZone ?? ''}
+                      onChange={event =>
+                        setStore(current => ({
+                          ...current,
+                          settings: {
+                            ...current.settings,
+                            secondaryTimeZone:
+                              event.target.value.trim() || undefined,
+                          },
+                        }))
+                      }
+                      aria-label="Secondary timezone"
+                    />
+                    {store.settings.secondaryTimeZone && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() =>
+                          setStore(current => ({
+                            ...current,
+                            settings: {
+                              ...current.settings,
+                              secondaryTimeZone: undefined,
+                            },
+                          }))
+                        }
+                      >
+                        Clear
+                      </Button>
+                    )}
+                  </div>
+                </label>
               </ProviderPanel>
             </Section>
-            <Section id="providers">
+            <div id="providers">
+            <Section>
+              <Title>Calendar settings</Title>
+              <p
+                style={{
+                  color: 'var(--platform-colors-text-secondary)',
+                  marginTop: 8,
+                }}
+              >
+                Configure provider access here. Public Google settings are
+                stored with the app; client secrets and OAuth tokens stay in the
+                shell vault.
+              </p>
+            </Section>
+            <Section>
               <Kicker>Calendar connections</Kicker>
               <ProviderOptionGrid aria-label="Calendar provider options">
                 {CALENDAR_PROVIDER_OPTIONS.map(option => (
@@ -5878,7 +6636,7 @@ export function PureCalendarShell({
                 ))}
               </ProviderOptionGrid>
             </Section>
-            <Section id="providers">
+            <Section>
               {/*
                 * The setup below follows the card you picked. It used to be
                 * "Google provider setup", shown whatever you selected — so two
@@ -5970,11 +6728,14 @@ export function PureCalendarShell({
                 )}
               </GoogleProviderPanel>
             </Section>
+            </div>
       </AppSettingsPages>
 
       {detailsOpen && (
         <DetailsOverlayBackdrop onClick={() => setDetailsOpen(false)}>
           <DetailsOverlay
+            ref={detailsOverlayRef}
+            tabIndex={-1}
             role="dialog"
             aria-modal="true"
             aria-label="Calendar details"
@@ -5984,14 +6745,14 @@ export function PureCalendarShell({
               <DetailsHeaderCopy>
                 <Kicker>Details</Kicker>
                 <Title>
-                  {selectedEvent
-                    ? selectedEvent.title || 'Event details'
-                    : selectedTask
-                    ? selectedTask.title || 'Task details'
-                    : pendingInvite
+                  {pendingInvite
                     ? 'Review calendar invite'
                     : pendingDraft
                     ? 'Review calendar draft'
+                    : selectedTask
+                    ? selectedTask.title || 'Task details'
+                    : selectedEvent
+                    ? selectedEvent.title || 'Event details'
                     : 'Calendar details'}
                 </Title>
               </DetailsHeaderCopy>
@@ -6132,6 +6893,7 @@ export function PureCalendarShell({
                         onClick={() => {
                           setPendingInvite(null)
                           setDraftError(null)
+                          setDetailsOpen(false)
                         }}
                       >
                         Cancel review
@@ -6259,6 +7021,7 @@ export function PureCalendarShell({
                         onClick={() => {
                           setPendingDraft(null)
                           setDraftError(null)
+                          setDetailsOpen(false)
                         }}
                       >
                         Cancel draft
@@ -6579,79 +7342,177 @@ export function PureCalendarShell({
                               disabled={selectedEventReadOnly}
                             />
                           </FieldLabel>
-                          <FieldLabel>
-                            Starts
-                            <input
-                              type="datetime-local"
-                              value={toDateTimeLocalValue(
-                                selectedEvent.startsAt,
-                                displayTimeZone,
-                              )}
-                              disabled={selectedEventReadOnly}
-                              onChange={event => {
-                                const startsAt = dateTimeLocalToIso(
-                                  event.target.value,
-                                  displayTimeZone,
-                                )
-                                if (!startsAt) {
-                                  setSelectedRangeError(
-                                    'Choose a valid start time.',
-                                  )
-                                  return
-                                }
-                                setSelectedRangeError(null)
-                                const durationMs = Math.max(
-                                  MIN_EVENT_MINUTES * 60 * 1000,
-                                  Date.parse(selectedEvent.endsAt) -
-                                    Date.parse(selectedEvent.startsAt),
-                                )
-                                updateSelectedEvent({
-                                  startsAt,
-                                  endsAt: new Date(
-                                    Date.parse(startsAt) + durationMs,
-                                  ).toISOString(),
-                                  timeZone: displayTimeZone,
-                                })
-                              }}
-                            />
-                          </FieldLabel>
-                          <FieldLabel>
-                            Ends
-                            <input
-                              type="datetime-local"
-                              value={toDateTimeLocalValue(
-                                selectedEvent.endsAt,
-                                displayTimeZone,
-                              )}
-                              disabled={selectedEventReadOnly}
-                              onChange={event => {
-                                const endsAt = dateTimeLocalToIso(
-                                  event.target.value,
-                                  displayTimeZone,
-                                )
-                                if (!endsAt) {
-                                  setSelectedRangeError(
-                                    'Choose a valid end time.',
-                                  )
-                                  return
-                                }
-                                if (
-                                  Date.parse(endsAt) <=
-                                  Date.parse(selectedEvent.startsAt)
-                                ) {
-                                  setSelectedRangeError(
-                                    'End time must be after start time.',
-                                  )
-                                  return
-                                }
-                                setSelectedRangeError(null)
-                                updateSelectedEvent({
-                                  endsAt,
-                                  timeZone: displayTimeZone,
-                                })
-                              }}
-                            />
-                          </FieldLabel>
+                          {selectedEvent.allDay ? (() => {
+                            const allDayZone = isValidTimeZone(selectedEvent.timeZone)
+                              ? selectedEvent.timeZone
+                              : displayTimeZone
+                            return (
+                            <>
+                              <FieldLabel>
+                                Start date
+                                <input
+                                  type="date"
+                                  value={dateKeyInTimeZone(
+                                    selectedEvent.startsAt,
+                                    allDayZone,
+                                  )}
+                                  disabled={selectedEventReadOnly}
+                                  onChange={event => {
+                                    const nextStartDate = event.target.value
+                                    if (!/^\d{4}-\d{2}-\d{2}$/.test(nextStartDate)) {
+                                      setSelectedRangeError('Choose a valid start date.')
+                                      return
+                                    }
+                                    const currentStart = dateKeyInTimeZone(
+                                      selectedEvent.startsAt,
+                                      allDayZone,
+                                    )
+                                    const currentEnd = allDayInclusiveEndDateKey(
+                                      selectedEvent,
+                                      allDayZone,
+                                    )
+                                    const spanDays = Math.max(
+                                      0,
+                                      Math.round(
+                                        (Date.parse(`${currentEnd}T00:00:00Z`) -
+                                          Date.parse(`${currentStart}T00:00:00Z`)) /
+                                          86_400_000,
+                                      ),
+                                    )
+                                    const nextEndDate = addDaysToDateKey(
+                                      nextStartDate,
+                                      spanDays,
+                                    )
+                                    setSelectedRangeError(null)
+                                    updateSelectedEvent({
+                                      ...allDayRangeFromInclusiveDates(
+                                        nextStartDate,
+                                        nextEndDate,
+                                        allDayZone,
+                                      ),
+                                      allDay: true,
+                                      timeZone: allDayZone,
+                                    })
+                                  }}
+                                />
+                              </FieldLabel>
+                              <FieldLabel>
+                                End date
+                                <input
+                                  type="date"
+                                  value={allDayInclusiveEndDateKey(
+                                    selectedEvent,
+                                    allDayZone,
+                                  )}
+                                  disabled={selectedEventReadOnly}
+                                  onChange={event => {
+                                    const nextEndDate = event.target.value
+                                    if (!/^\d{4}-\d{2}-\d{2}$/.test(nextEndDate)) {
+                                      setSelectedRangeError('Choose a valid end date.')
+                                      return
+                                    }
+                                    const startDate = dateKeyInTimeZone(
+                                      selectedEvent.startsAt,
+                                      allDayZone,
+                                    )
+                                    if (nextEndDate < startDate) {
+                                      setSelectedRangeError(
+                                        'End date must be on or after start date.',
+                                      )
+                                      return
+                                    }
+                                    setSelectedRangeError(null)
+                                    updateSelectedEvent({
+                                      ...allDayRangeFromInclusiveDates(
+                                        startDate,
+                                        nextEndDate,
+                                        allDayZone,
+                                      ),
+                                      allDay: true,
+                                      timeZone: allDayZone,
+                                    })
+                                  }}
+                                />
+                              </FieldLabel>
+                            </>
+                            )
+                          })() : (
+                            <>
+                              <FieldLabel>
+                                Starts
+                                <input
+                                  type="datetime-local"
+                                  value={toDateTimeLocalValue(
+                                    selectedEvent.startsAt,
+                                    displayTimeZone,
+                                  )}
+                                  disabled={selectedEventReadOnly}
+                                  onChange={event => {
+                                    const startsAt = dateTimeLocalToIso(
+                                      event.target.value,
+                                      displayTimeZone,
+                                    )
+                                    if (!startsAt) {
+                                      setSelectedRangeError(
+                                        'Choose a valid start time.',
+                                      )
+                                      return
+                                    }
+                                    setSelectedRangeError(null)
+                                    const durationMs = Math.max(
+                                      MIN_EVENT_MINUTES * 60 * 1000,
+                                      Date.parse(selectedEvent.endsAt) -
+                                        Date.parse(selectedEvent.startsAt),
+                                    )
+                                    updateSelectedEvent({
+                                      startsAt,
+                                      endsAt: new Date(
+                                        Date.parse(startsAt) + durationMs,
+                                      ).toISOString(),
+                                      timeZone: displayTimeZone,
+                                    })
+                                  }}
+                                />
+                              </FieldLabel>
+                              <FieldLabel>
+                                Ends
+                                <input
+                                  type="datetime-local"
+                                  value={toDateTimeLocalValue(
+                                    selectedEvent.endsAt,
+                                    displayTimeZone,
+                                  )}
+                                  disabled={selectedEventReadOnly}
+                                  onChange={event => {
+                                    const endsAt = dateTimeLocalToIso(
+                                      event.target.value,
+                                      displayTimeZone,
+                                    )
+                                    if (!endsAt) {
+                                      setSelectedRangeError(
+                                        'Choose a valid end time.',
+                                      )
+                                      return
+                                    }
+                                    if (
+                                      Date.parse(endsAt) <=
+                                      Date.parse(selectedEvent.startsAt)
+                                    ) {
+                                      setSelectedRangeError(
+                                        'End time must be after start time.',
+                                      )
+                                      return
+                                    }
+                                    setSelectedRangeError(null)
+                                    updateSelectedEvent({
+                                      endsAt,
+                                      timeZone: displayTimeZone,
+                                    })
+                                  }}
+                                />
+                              </FieldLabel>
+                            </>
+                          )}
                           {selectedRangeError && (
                             <DetailsFullWidth>
                               <InlineError>{selectedRangeError}</InlineError>
@@ -6740,6 +7601,10 @@ export function PureCalendarShell({
                                 // this always edits the base event — a
                                 // scoped "this event only" recurrence change
                                 // has no meaning.
+                                const baseEventId = recurrenceBaseEventId(selectedEvent.id)
+                                if (eventEditing) {
+                                  forceEditOnOpenRef.current = baseEventId
+                                }
                                 setStore(current => ({
                                   ...current,
                                   events: applyRecurringEventEdit(
@@ -6749,9 +7614,7 @@ export function PureCalendarShell({
                                     'all',
                                   ),
                                 }))
-                                setSelectedEventId(
-                                  recurrenceBaseEventId(selectedEvent.id),
-                                )
+                                setSelectedEventId(baseEventId)
                               }}
                             >
                               <option value="none">Does not repeat</option>
@@ -6759,6 +7622,19 @@ export function PureCalendarShell({
                               <option value="weekly">Weekly</option>
                               <option value="monthly">Monthly</option>
                             </select>
+                            {selectedEvent.recurrenceRule && (
+                              <span
+                                style={{
+                                  fontSize: 12,
+                                  color: 'var(--platform-colors-text-secondary)',
+                                }}
+                              >
+                                {describeRecurrenceRule(
+                                  selectedEvent.recurrenceRule,
+                                  { timeZone: displayTimeZone },
+                                )}
+                              </span>
+                            )}
                           </FieldLabel>
                           )}
                           {!isTeamEvent(selectedEvent) && (
@@ -6825,6 +7701,42 @@ export function PureCalendarShell({
                               }
                               disabled={selectedEventReadOnly}
                             />
+                            {eventMeetingUrl(selectedEvent) && (
+                              <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                                <Button
+                                  size="sm"
+                                  variant="subtle"
+                                  type="button"
+                                  onClick={() => {
+                                    const url = eventMeetingUrl(selectedEvent)
+                                    if (url) void openExternalUrl(url)
+                                  }}
+                                >
+                                  Join
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  type="button"
+                                  onClick={() => {
+                                    const url = eventMeetingUrl(selectedEvent)
+                                    if (!url) return
+                                    void navigator.clipboard
+                                      ?.writeText(url)
+                                      .then(() => {
+                                        setCopiedJoinLink(true)
+                                        window.setTimeout(
+                                          () => setCopiedJoinLink(false),
+                                          1500,
+                                        )
+                                      })
+                                      .catch(() => undefined)
+                                  }}
+                                >
+                                  {copiedJoinLink ? 'Copied' : 'Copy link'}
+                                </Button>
+                              </div>
+                            )}
                           </FieldLabel>
                           )}
                           {isTeamEvent(selectedEvent) ? (
@@ -6958,18 +7870,16 @@ export function PureCalendarShell({
                         </DetailsBadgeRow>
                         <DetailsMetaList>
                           <div>
-                            {dayLabel(
-                              new Date(selectedEvent.startsAt),
-                              displayTimeZone,
-                            )}
-                            ,{' '}
-                            {formatTime(
-                              selectedEvent.startsAt,
-                              displayTimeZone,
-                            )}{' '}
-                            to{' '}
-                            {formatTime(selectedEvent.endsAt, displayTimeZone)}
+                            {formatEventWhen(selectedEvent, displayTimeZone)}
                           </div>
+                          {selectedEvent.recurrenceRule && (
+                            <div>
+                              {describeRecurrenceRule(
+                                selectedEvent.recurrenceRule,
+                                { timeZone: displayTimeZone },
+                              )}
+                            </div>
+                          )}
                           {selectedEventOutsideAvailability && (
                             <div>Outside available hours.</div>
                           )}
@@ -7036,21 +7946,33 @@ export function PureCalendarShell({
                       </DetailsSummaryPanel>
                     </DetailsEventGrid>
                     ) : (
-                      <EventReadBody
-                        event={selectedEvent}
-                        calendar={selectedCalendar}
-                        timeZone={displayTimeZone}
-                        outsideAvailability={selectedEventOutsideAvailability}
-                        rsvpAttendee={selectedEventRsvpAttendee}
-                        readOnly={selectedEventReadOnly}
-                        onRsvp={rsvpSelectedEvent}
-                  rsvpBusy={rsvpBusy}
-                  onOpenMail={selectedEvent.sourceThreadId && selectedEvent.sourceAccountId !== 'ics-file' && !parseGoogleEventLocalId(selectedEvent.id) ? () => {
-                    const resourceId = `invitation/${encodeURIComponent(selectedEvent.sourceThreadId!)}/${encodeURIComponent(selectedEvent.sourceMessageId ?? '')}`
-                    void bridge.call(PLATFORM_BRIDGE_METHODS.WORKSPACE_OPEN_APP, [{ appSlug: 'mail', resourceId }])
-                      .catch(() => setSelectedRangeError('Could not open Mail. Open the original invitation there to respond.'))
-                  } : undefined}
-                      />
+                      <>
+                        <EventReadBody
+                          event={selectedEvent}
+                          calendar={selectedCalendar}
+                          timeZone={displayTimeZone}
+                          secondaryTimeZone={secondaryTimeZone}
+                          outsideAvailability={selectedEventOutsideAvailability}
+                          rsvpAttendee={selectedEventRsvpAttendee}
+                          readOnly={selectedEventReadOnly}
+                          readOnlyReason={readOnlyReasonForEvent(
+                            selectedCalendar,
+                            selectedEvent,
+                          )}
+                          onRsvp={rsvpSelectedEvent}
+                          rsvpBusy={rsvpBusy}
+                          onOpenMail={selectedEvent.sourceThreadId && selectedEvent.sourceAccountId !== 'ics-file' && !parseGoogleEventLocalId(selectedEvent.id) ? () => {
+                            const resourceId = `invitation/${encodeURIComponent(selectedEvent.sourceThreadId!)}/${encodeURIComponent(selectedEvent.sourceMessageId ?? '')}`
+                            void bridge.call(PLATFORM_BRIDGE_METHODS.WORKSPACE_OPEN_APP, [{ appSlug: 'mail', resourceId }])
+                              .catch(() => setSelectedRangeError('Could not open Mail. Open the original invitation there to respond.'))
+                          } : undefined}
+                        />
+                        {selectedRangeError && (
+                          <InlineError style={{ marginTop: 10 }}>
+                            {selectedRangeError}
+                          </InlineError>
+                        )}
+                      </>
                     )}
                     <DetailsActionRow>
                       {!selectedEventReadOnly && (
@@ -7086,7 +8008,13 @@ export function PureCalendarShell({
                       </Button>
                       <Button
                         size="sm"
-                        onClick={() => void openMeetingForEvent(selectedEvent)}
+                        onClick={() =>
+                          void openMeetingForEvent(selectedEvent).catch(() =>
+                            setSelectedRangeError(
+                              'Could not open the meeting page in PureMeet.',
+                            ),
+                          )
+                        }
                         title="Get ready, take notes and follow up in PureMeet"
                       >
                         Meeting page
@@ -7095,14 +8023,38 @@ export function PureCalendarShell({
                         Download .ics
                       </Button>
                       {pendingEventDelete ? (
-                        <Button
-                          size="sm"
-                          variant="danger"
-                          onClick={deleteSelectedEvent}
-                          disabled={selectedEventReadOnly}
-                        >
-                          Confirm delete
-                        </Button>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                          {selectedEvent.recurrenceRule && (
+                            <select
+                              aria-label="Delete recurring scope"
+                              value={recurrenceEditScope}
+                              onChange={event =>
+                                setRecurrenceEditScope(
+                                  event.target.value as RecurrenceEditScope,
+                                )
+                              }
+                            >
+                              <option value="this">This event</option>
+                              <option value="following">This &amp; following</option>
+                              <option value="all">All events</option>
+                            </select>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            onClick={deleteSelectedEvent}
+                            disabled={selectedEventReadOnly}
+                          >
+                            Confirm delete
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setPendingEventDelete(false)}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
                       ) : (
                         <Button
                           size="sm"

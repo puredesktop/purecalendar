@@ -59,6 +59,12 @@ export function agreeOnSettings(settings: CalendarSettings): void {
   if (thisCopy.baseline) thisCopy.baseline.settings = settings
 }
 
+/** Advance lastSeen to a store pulled from disk without marking remote records as locally edited. */
+export function syncLastSeenStore(store: CalendarStore): void {
+  if (!thisCopy.baseline) thisCopy.baseline = baselineOf(store)
+  thisCopy.lastSeen = store
+}
+
 /** Note what changed, when it changed. Called for every new store this copy holds. */
 export function noteStoreChange(store: CalendarStore, now = new Date().toISOString()): void {
   if (!thisCopy.baseline) thisCopy.baseline = baselineOf(store)
@@ -113,6 +119,9 @@ function clearSavedEditTimes(before: number): void {
  */
 export async function saveCalendarStoreFile(memory: CalendarStore): Promise<StoreChanges | null> {
   thisCopy.baseline ??= baselineOf(memory)
+  // Capture the snapshot cutoff BEFORE any conflict retry so edits made while
+  // a retry is in flight are never cleared from editTimes.
+  const snapshotCutoffMs = Date.now()
   for (let attempt = 0; attempt < MAX_MERGE_TRIES; attempt++) {
     const now = new Date().toISOString()
     const { raw, disk, meta, version } = await readFile()
@@ -139,7 +148,7 @@ export async function saveCalendarStoreFile(memory: CalendarStore): Promise<Stor
     thisCopy.version = written
     thisCopy.appSettings = null
     thisCopy.fileUnreadable = false
-    clearSavedEditTimes(Date.parse(now))
+    clearSavedEditTimes(snapshotCutoffMs)
     return changesFor(memory, merge.store)
   }
   throw new Error('Other copies of Calendar kept saving at the same moment. Your changes are safe here and will be saved on the next try.')

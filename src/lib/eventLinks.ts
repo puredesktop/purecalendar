@@ -68,8 +68,15 @@ export function firstUrlIn(text: string | undefined | null): string | null {
 
 /** Parse inert markup into React text/link runs; never mount supplied HTML. */
 export function eventDescriptionSegments(text: string): TextSegment[] {
-  if (!/<\/?[a-z][^>]*>/i.test(text)) return splitTextIntoLinks(text)
-  const doc = new DOMParser().parseFromString(text, 'text/html')
+  // Angle-bracketed plain-text URLs (`<https://zoom.us/j/123>`) and emails
+  // (`<alex@example.com>`) are NOT HTML tags — DOMParser would parse them as
+  // unknown empty elements and erase the URL completely. Unwrap them first.
+  const unwrapped = text
+    .replace(/<(https?:\/\/[^\s<>]+)>/gi, '$1')
+    .replace(/<([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})>/g, '$1')
+  if (!/<\/?[a-z][a-z0-9:-]*(?:\s[^>]*)?\/?>/i.test(unwrapped))
+    return splitTextIntoLinks(unwrapped)
+  const doc = new DOMParser().parseFromString(unwrapped, 'text/html')
   const out: TextSegment[] = []
   const newline = (): void => {
     if (out.length && !out[out.length - 1].value.endsWith('\n'))
@@ -123,12 +130,19 @@ export function meetingUrlIn(text: string): string | null {
     if (!segment.href?.startsWith('http')) continue
     try {
       const url = new URL(segment.href)
+      const host = url.hostname.toLowerCase()
+      const path = url.pathname
       if (
-        (/(^|\.)zoom\.us$/.test(url.hostname) &&
-          /^\/(j|my)\//.test(url.pathname)) ||
-        url.hostname === 'meet.google.com' ||
-        (['teams.microsoft.com', 'teams.live.com'].includes(url.hostname) &&
-          (url.pathname.startsWith('/l/meetup-join') || url.pathname.startsWith('/meet/')))
+        (/(^|\.)zoom\.us$/.test(host) &&
+          /^\/(j|my|w|s)\//.test(path)) ||
+        (host === 'meet.google.com' &&
+          !/^\/(help|about|pricing|landing)?\/?$/i.test(path)) ||
+        (['teams.microsoft.com', 'teams.live.com'].includes(host) &&
+          (path.startsWith('/l/meetup-join') || path.startsWith('/meet/'))) ||
+        (/(^|\.)webex\.com$/.test(host) &&
+          /^\/(meet|join|wc)\//i.test(path)) ||
+        (host === 'meet.jit.si' && path.length > 1) ||
+        (host === 'whereby.com' && path.length > 1)
       )
         return url.href
     } catch {

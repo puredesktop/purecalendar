@@ -1,4 +1,4 @@
-import { allDayEventPatch, createDraftEvent, ensureLocalCalendar, firstEditableCalendarId, instantFromZonedWallTime, systemTimeZone } from './calendarModel'
+import { allDayEventPatch, createDraftEvent, ensureLocalCalendar, firstEditableCalendarId, instantFromZonedWallTime, resolveCalendarTimeZone, systemTimeZone } from './calendarModel'
 import type { CalendarEvent, CalendarStore } from '../types'
 
 /**
@@ -43,7 +43,7 @@ export function addTeamDate(store: CalendarStore, request: TeamDateRequest): { s
   const made = store.events.find(event => event.linkedItems.some(item => item.id === marker))
   if (made) return { store, eventId: made.id }
   const ensured = firstEditableCalendarId(store) ? { store, calendarId: firstEditableCalendarId(store) } : ensureLocalCalendar(store)
-  const zone = systemTimeZone()
+  const zone = store.settings ? resolveCalendarTimeZone(store.settings).timeZone : systemTimeZone()
   const draft = createDraftEvent(ensured.calendarId, instantFromZonedWallTime(request.date, 12, 0, zone), request.title, zone)
   const event: CalendarEvent = {
     ...draft,

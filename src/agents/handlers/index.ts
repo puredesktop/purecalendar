@@ -9,16 +9,25 @@ import { recordOperation, teamCalendar, teamCalendarOffered } from '../../bridge
 import type { CalendarStore, EventAttendee, EventStatus } from '../../types'
 import {
   activateEvent,
-  canEditCalendarEvent,
   allDayEventPatch,
+  applyRecurringEventEdit,
+  canEditCalendarEvent,
   createDraftEvent,
-  firstEditableCalendarId,
   ensureLocalCalendar,
-  resolveAgentEventTime,
+  eventsInRange,
+  firstEditableCalendarId,
   isDraftEvent,
+  isProviderBackedEventId,
+  isValidTimeZone,
   moveEvent,
+  recurrenceBaseEventId,
+  recurrenceInstanceIndex,
+  recurringEditResultId,
   removeEventWithTombstone,
+  removeRecurringEventOccurrence,
+  resolveAgentEventTime,
   resolveCalendarTimeZone,
+  resolveRecurringOccurrence,
   searchCalendarStore,
   systemTimeZone,
   visibleCalendarEvents,
@@ -169,11 +178,27 @@ const listCalendarEvents: AgentToolHandler = async invoke => {
 
   try {
     const store = requireStore()
-    let events = visibleCalendarEvents(store, startsAt, endsAt)
-    const calendarId = readAgentToolStringArg(invoke.arguments, 'calendarId')
-    if (calendarId) {
-      events = events.filter(e => e.calendarId === calendarId)
+    const zone =
+      store.settings.timeZoneMode === 'fixed' &&
+      store.settings.timeZone &&
+      isValidTimeZone(store.settings.timeZone)
+        ? store.settings.timeZone
+        : systemTimeZone()
+    const startResolved = resolveAgentEventTime(startsAt, zone)
+    const endResolved = resolveAgentEventTime(endsAt, zone)
+    if (!startResolved || !endResolved) {
+      return agentToolErrorContent(
+        'startsAt and endsAt must be valid ISO 8601 date or date-time strings.',
+      )
     }
+    const calendarId = readAgentToolStringArg(invoke.arguments, 'calendarId')
+    let events = calendarId
+      ? eventsInRange(
+          store.events.filter(e => e.calendarId === calendarId),
+          startResolved.instant,
+          endResolved.instant,
+        )
+      : visibleCalendarEvents(store, startResolved.instant, endResolved.instant)
     return {
       content: formatAgentToolJson({
         events: events.map(e => ({
@@ -229,9 +254,17 @@ const createCalendarDraft: AgentToolHandler = async invoke => {
 
   try {
     let store = requireStore()
-    let calendarId =
-      readAgentToolStringArg(invoke.arguments, 'calendarId') ||
-      firstEditableCalendarId(store)
+    const requestedCalendarId = readAgentToolStringArg(invoke.arguments, 'calendarId')
+    let calendarId = requestedCalendarId || firstEditableCalendarId(store)
+    if (requestedCalendarId) {
+      const targetCalendar = store.calendars.find(c => c.id === requestedCalendarId)
+      if (!targetCalendar) {
+        return agentToolErrorContent(`Calendar ${requestedCalendarId} not found.`)
+      }
+      if (targetCalendar.readOnly) {
+        return agentToolErrorContent(`Calendar "${targetCalendar.name}" is read-only.`)
+      }
+    }
     if (!calendarId) {
       // Nothing to write to (no account connected): the calendar on this computer.
       const ensured = ensureLocalCalendar(store)
@@ -241,6 +274,11 @@ const createCalendarDraft: AgentToolHandler = async invoke => {
     }
     const timeZone =
       readAgentToolStringArg(invoke.arguments, 'timeZone') || undefined
+    if (timeZone && !isValidTimeZone(timeZone)) {
+      return agentToolErrorContent(
+        `timeZone "${timeZone}" is not a valid IANA time zone (e.g. America/Los_Angeles).`,
+      )
+    }
     const zone = timeZone || systemTimeZone()
 
     // Resolve before storing. A bare date or a zoneless wall time used to be
@@ -338,7 +376,8 @@ const updateCalendarEvent: AgentToolHandler = async invoke => {
 
   try {
     const store = requireStore()
-    const existing = store.events.find(e => e.id === eventId)
+    const baseId = recurrenceBaseEventId(eventId)
+    const existing = store.events.find(e => e.id === baseId)
     if (!existing) {
       return agentToolErrorContent(`Event ${eventId} not found.`)
     }
@@ -351,7 +390,14 @@ const updateCalendarEvent: AgentToolHandler = async invoke => {
     const title = readAgentToolStringArg(invoke.arguments, 'title')
     if (title != null) patch.title = title
     const timeZone = readAgentToolStringArg(invoke.arguments, 'timeZone')
-    if (timeZone != null) patch.timeZone = timeZone
+    if (timeZone != null) {
+      if (!isValidTimeZone(timeZone)) {
+        return agentToolErrorContent(
+          `timeZone "${timeZone}" is not a valid IANA time zone (e.g. America/Los_Angeles).`,
+        )
+      }
+      patch.timeZone = timeZone
+    }
 
     // Times resolve through the same path as createCalendarDraft: a bare
     // date or zoneless wall time stored verbatim reads back as UTC and lands
@@ -397,7 +443,16 @@ const updateCalendarEvent: AgentToolHandler = async invoke => {
     const location = readAgentToolStringArg(invoke.arguments, 'location')
     if (location != null) patch.location = location
     const calendarId = readAgentToolStringArg(invoke.arguments, 'calendarId')
-    if (calendarId != null) patch.calendarId = calendarId
+    if (calendarId != null) {
+      const targetCalendar = store.calendars.find(c => c.id === calendarId)
+      if (!targetCalendar) {
+        return agentToolErrorContent(`Calendar ${calendarId} not found.`)
+      }
+      if (targetCalendar.readOnly) {
+        return agentToolErrorContent(`Calendar "${targetCalendar.name}" is read-only.`)
+      }
+      patch.calendarId = calendarId
+    }
     const allDay =
       'allDay' in invoke.arguments &&
       typeof invoke.arguments.allDay === 'boolean'
@@ -406,34 +461,74 @@ const updateCalendarEvent: AgentToolHandler = async invoke => {
     const attendees = readAttendeesArg(invoke.arguments)
     if (attendees !== undefined) patch.attendees = attendees
 
+    const occurrence = existing.recurrenceRule
+      ? resolveRecurringOccurrence(existing, eventId)
+      : existing
     const moved = startsAt != null && endsAt == null
-      ? moveEvent(existing, startsAt)
+      ? moveEvent(occurrence, startsAt)
       : null
     let updated: CalendarStore['events'][number] = moved
       ? { ...moved, ...patch, syncState: 'pending' as const }
-      : { ...existing, ...patch, syncState: 'pending' as const }
+      : { ...occurrence, ...patch, syncState: 'pending' as const }
     if (allDay !== undefined) {
       // allDayEventPatch snaps times to day boundaries in the event's zone —
       // setting only the flag renders the event on the wrong day for
       // negative-UTC-offset timezones.
       updated = { ...updated, ...allDayEventPatch(updated, allDay, zone) }
     }
-    if (refusesQuietChange(invoke.arguments, existing, updated)) {
+    if (Date.parse(updated.endsAt) <= Date.parse(updated.startsAt)) {
+      return agentToolErrorContent(
+        `endsAt (${updated.endsAt}) must be after startsAt (${updated.startsAt}).`,
+      )
+    }
+    if (refusesQuietChange(invoke.arguments, occurrence, updated)) {
       return agentToolErrorContent(INVITEES_REFUSAL)
     }
-    commitEvents(store, events => events.map(e => (e.id === eventId ? updated : e)))
+    const rawScope = readAgentToolStringArg(invoke.arguments, 'scope')
+    const scope =
+      rawScope === 'this' || rawScope === 'following' || rawScope === 'all'
+        ? rawScope
+        : 'all'
+    const effectivePatch: Partial<CalendarStore['events'][number]> = {
+      ...patch,
+      ...(moved || allDay !== undefined
+        ? {
+            startsAt: updated.startsAt,
+            endsAt: updated.endsAt,
+            allDay: updated.allDay,
+            timeZone: updated.timeZone,
+          }
+        : {}),
+    }
+    let resultEvent = updated
+    if (existing.recurrenceRule) {
+      const resultId = recurringEditResultId(eventId, scope)
+      commitEvents(store, events => {
+        const nextEvents = applyRecurringEventEdit(
+          events,
+          occurrence,
+          effectivePatch,
+          scope,
+        )
+        const found = nextEvents.find(e => e.id === resultId)
+        if (found) resultEvent = found
+        return nextEvents
+      })
+    } else {
+      commitEvents(store, events => events.map(e => (e.id === baseId ? updated : e)))
+    }
     recordAgentOperation(
       'calendar.event.update',
-      `Updated event "${updated.title}" (${updated.id})`,
+      `Updated event "${resultEvent.title}" (${resultEvent.id})`,
     )
     return {
       content: formatAgentToolJson({
-        id: updated.id,
-        title: updated.title,
-        startsAt: updated.startsAt,
-        endsAt: updated.endsAt,
-        allDay: updated.allDay,
-        status: updated.status,
+        id: resultEvent.id,
+        title: resultEvent.title,
+        startsAt: resultEvent.startsAt,
+        endsAt: resultEvent.endsAt,
+        allDay: resultEvent.allDay,
+        status: resultEvent.status,
       }),
     }
   } catch (error) {
@@ -452,7 +547,8 @@ const deleteCalendarEvent: AgentToolHandler = async invoke => {
 
   try {
     const store = requireStore()
-    const existing = store.events.find(e => e.id === eventId)
+    const baseId = recurrenceBaseEventId(eventId)
+    const existing = store.events.find(e => e.id === baseId)
     if (!existing) {
       return agentToolErrorContent(`Event ${eventId} not found.`)
     }
@@ -465,11 +561,29 @@ const deleteCalendarEvent: AgentToolHandler = async invoke => {
       return agentToolErrorContent(INVITEES_REFUSAL)
     }
 
+    const rawScope = readAgentToolStringArg(invoke.arguments, 'scope')
+    const scope =
+      rawScope === 'this' || rawScope === 'following' || rawScope === 'all'
+        ? rawScope
+        : 'all'
+
     // Remove + tombstone: the tombstone keeps a provider-backed event from
     // resurrecting on the next snapshot merge and queues the provider-side
     // delete for the sync loop.
-    commitStore(store, current => removeEventWithTombstone(current, eventId))
-    const providerDeleteQueued = eventId.startsWith('g:')
+    const index = recurrenceInstanceIndex(eventId)
+    const deletesBase =
+      !existing.recurrenceRule ||
+      scope === 'all' ||
+      (scope === 'following' && index === 0)
+    if (existing.recurrenceRule && scope !== 'all') {
+      const occurrence = resolveRecurringOccurrence(existing, eventId)
+      commitStore(store, current =>
+        removeRecurringEventOccurrence(current, occurrence, scope),
+      )
+    } else {
+      commitStore(store, current => removeEventWithTombstone(current, baseId))
+    }
+    const providerDeleteQueued = deletesBase && isProviderBackedEventId(baseId)
     recordAgentOperation(
       'calendar.event.delete',
       `Deleted event "${existing.title}" (${eventId})`,
@@ -500,7 +614,8 @@ const rescheduleCalendarEvent: AgentToolHandler = async invoke => {
 
   try {
     const store = requireStore()
-    const existing = store.events.find(e => e.id === eventId)
+    const baseId = recurrenceBaseEventId(eventId)
+    const existing = store.events.find(e => e.id === baseId)
     if (!existing) {
       return agentToolErrorContent(`Event ${eventId} not found.`)
     }
@@ -523,7 +638,7 @@ const rescheduleCalendarEvent: AgentToolHandler = async invoke => {
       return agentToolErrorContent(INVITEES_REFUSAL)
     }
     const moved = moveEvent(existing, resolved.instant)
-    commitEvents(store, events => events.map(e => (e.id === eventId ? moved : e)))
+    commitEvents(store, events => events.map(e => (e.id === baseId ? moved : e)))
     recordAgentOperation(
       'calendar.event.reschedule',
       `Rescheduled event "${moved.title}" to ${moved.startsAt}`,
@@ -547,7 +662,8 @@ const activateCalendarEvent: AgentToolHandler = async invoke => {
 
   try {
     const store = requireStore()
-    const existing = store.events.find(e => e.id === eventId)
+    const baseId = recurrenceBaseEventId(eventId)
+    const existing = store.events.find(e => e.id === baseId)
     if (!existing) {
       return agentToolErrorContent(`Event ${eventId} not found.`)
     }
@@ -567,7 +683,7 @@ const activateCalendarEvent: AgentToolHandler = async invoke => {
     }
 
     const activated = activateEvent(existing)
-    commitEvents(store, events => events.map(e => (e.id === eventId ? activated : e)))
+    commitEvents(store, events => events.map(e => (e.id === baseId ? activated : e)))
     recordAgentOperation(
       'calendar.event.activate',
       `Activated event "${activated.title}" (${eventId})`,

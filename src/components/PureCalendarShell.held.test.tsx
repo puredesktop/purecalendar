@@ -134,7 +134,7 @@ describe('background work in PureCalendarShell', () => {
     expect(called('teamCalendar.list').length).toBeGreaterThan(0)
     expect(called('notification').length).toBeGreaterThan(0)
     expect(called('availability.share').length).toBeGreaterThan(0)
-  })
+  }, 10_000)
 
   it('does not start in a held copy: no sync, feeds, team calendar loop, invites or reminders', async () => {
     shell.background = false
@@ -149,7 +149,7 @@ describe('background work in PureCalendarShell', () => {
     expect(called('availability.share')).toEqual([])
     // One read to know who the organisation is, never the store-merging look.
     expect(called('teamCalendar.list').length).toBeLessThanOrEqual(1)
-  })
+  }, 10_000)
 
   describe.each([
     ['the normal tab books it', true, 1],

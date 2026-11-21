@@ -8,7 +8,7 @@ import {
   writeCalendarStoreFile,
 } from '../bridge/platformBridge'
 import { agreeOnSettings, agreeWithLoaded } from '../lib/calendarStoreFile'
-import { demoCalendarStore } from '../lib/calendarModel'
+import { demoCalendarStore, parseEventBoundMs } from '../lib/calendarModel'
 import {
   CALENDAR_STORE_BACKUP_FILE,
   CALENDAR_STORE_CORRUPT_FILE,
@@ -64,15 +64,78 @@ export function mergeGoogleSnapshot(
   // not been confirmed yet; letting the snapshot re-add it is the "deleted
   // events resurrect on refresh" bug.
   const removedEventIds = new Set(local.removedEventIds ?? [])
-  const remoteEvents = remote.events.filter(
-    event => !pendingIds.has(event.id) && !removedEventIds.has(event.id),
-  )
+  const localById = new Map(local.events.map(event => [event.id, event]))
+  const remoteEvents = remote.events
+    .filter(event => !pendingIds.has(event.id) && !removedEventIds.has(event.id))
+    .map(event => {
+      const prev = localById.get(event.id)
+      if (!prev) return event
+      // Preserve local-only enrichments Google's snapshot does not round-trip.
+      const keepReminders =
+        event.reminders.length === 0 && prev.reminders.length > 0
+          ? prev.reminders
+          : event.reminders
+      const keepLinked =
+        event.linkedItems.length === 0 && prev.linkedItems.length > 0
+          ? prev.linkedItems
+          : event.linkedItems
+      return keepReminders === event.reminders && keepLinked === event.linkedItems
+        ? event
+        : { ...event, reminders: keepReminders, linkedItems: keepLinked }
+    })
+  const remoteEventIds = new Set(remoteEvents.map(event => event.id))
+  // Keep synced provider events that fall strictly outside a bounded fetch
+  // window (e.g. events >90 days in the future) so periodic refresh never
+  // erases far-future or past synced events.
+  const windowStartMs = remote.fetchedWindow
+    ? Date.parse(remote.fetchedWindow.start)
+    : Number.NaN
+  const windowEndMs = remote.fetchedWindow
+    ? Date.parse(remote.fetchedWindow.end)
+    : Number.NaN
+  const keptOutsideWindow =
+    Number.isFinite(windowStartMs) && Number.isFinite(windowEndMs)
+      ? local.events.filter(event => {
+          if (
+            event.source !== 'provider' ||
+            event.syncState !== 'synced' ||
+            event.recurrenceRule != null ||
+            team(event) ||
+            pendingIds.has(event.id) ||
+            removedEventIds.has(event.id) ||
+            failedCalendarIds.has(event.calendarId) ||
+            remoteEventIds.has(event.id)
+          ) {
+            return false
+          }
+          const startMs = parseEventBoundMs(event.startsAt, event.timeZone)
+          const endMs = parseEventBoundMs(event.endsAt, event.timeZone)
+          if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return false
+          return endMs <= windowStartMs || startMs >= windowEndMs
+        })
+      : []
+
   // A calendar the user removed must not come back on the next sync,
   // and neither may its events.
   const removedCalendarIds = new Set(local.settings.removedCalendarIds ?? [])
+  const remoteCalendarById = new Map(remote.calendars.map(c => [c.id, c]))
   const localCalendarIds = new Set(local.calendars.map(c => c.id))
   const localAccountIds = new Set(local.accounts.map(a => a.id))
   const localSourceIds = new Set(local.sources.map(s => s.id))
+  const mergedLocalCalendars = local.calendars.map(calendar => {
+    const fresh = remoteCalendarById.get(calendar.id)
+    if (!fresh) return calendar
+    return {
+      ...calendar,
+      ...(fresh.readOnly !== undefined ? { readOnly: fresh.readOnly } : { readOnly: undefined }),
+      ...(fresh.lastSyncedAt ? { lastSyncedAt: fresh.lastSyncedAt } : {}),
+      ...(fresh.lastSyncError
+        ? { lastSyncError: fresh.lastSyncError }
+        : fresh.lastSyncedAt
+          ? { lastSyncError: undefined }
+          : {}),
+    }
+  })
   return {
     ...local,
     accounts: [
@@ -84,7 +147,7 @@ export function mergeGoogleSnapshot(
       ...remote.sources.filter(source => !localSourceIds.has(source.id)),
     ],
     calendars: [
-      ...local.calendars,
+      ...mergedLocalCalendars,
       ...remote.calendars.filter(
         calendar =>
           !localCalendarIds.has(calendar.id) &&
@@ -95,6 +158,9 @@ export function mergeGoogleSnapshot(
       ...nonProviderLocal,
       ...unsyncedLocal,
       ...keptFromFailedCalendars.filter(
+        event => !removedCalendarIds.has(event.calendarId),
+      ),
+      ...keptOutsideWindow.filter(
         event => !removedCalendarIds.has(event.calendarId),
       ),
       ...remoteEvents.filter(

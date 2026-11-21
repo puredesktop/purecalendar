@@ -1,4 +1,5 @@
 import ICAL from 'ical.js'
+import { isValidTimeZone, systemTimeZone } from './calendarModel'
 import type {
   CalendarInviteContact,
   CalendarInviteIntent,
@@ -100,6 +101,19 @@ export function parseIcsFileInvite(rawSource: string): IcsFileInvite | null {
       }))
       .filter(attendee => attendee.email.length > 0)
 
+    const startIso = isoFromTime(event.startDate)
+    const fallbackEndMs =
+      event.startDate
+        ? event.startDate.toJSDate().getTime() +
+          (event.startDate.isDate ? 86_400_000 : 30 * 60_000)
+        : Date.now()
+    const rawTz =
+      (eventComponent.getFirstProperty('dtstart')?.getParameter('tzid') as string | undefined) ??
+      event.startDate?.zone?.tzid
+    const safeTz =
+      rawTz && rawTz !== 'floating' && isValidTimeZone(rawTz)
+        ? rawTz
+        : systemTimeZone()
     return {
       uid: event.uid || `invite_${Date.now()}`,
       method,
@@ -113,11 +127,11 @@ export function parseIcsFileInvite(rawSource: string): IcsFileInvite | null {
       title: event.summary || 'Calendar invite',
       description: event.description || '',
       ...(event.location ? { location: event.location } : {}),
-      startsAt: isoFromTime(event.startDate),
-      endsAt: isoFromTime(event.endDate),
-      timeZone:
-        event.startDate?.zone?.tzid ??
-        Intl.DateTimeFormat().resolvedOptions().timeZone,
+      startsAt: startIso,
+      endsAt: event.endDate
+        ? isoFromTime(event.endDate)
+        : new Date(fallbackEndMs).toISOString(),
+      timeZone: safeTz,
       ...(organizer ? { organizer } : {}),
       attendees,
       ...(eventComponent.getFirstPropertyValue('rrule')

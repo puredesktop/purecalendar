@@ -173,7 +173,7 @@ export async function saveTextFile(
     anchor.href = url
     anchor.download = options.defaultName ?? 'event.ics'
     anchor.click()
-    URL.revokeObjectURL(url)
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
     return true
   }
   const result = await bridge.call<{ path: string | null }>(
@@ -283,6 +283,7 @@ export async function openMeetingForEvent(event: {
   attendees: { name: string; email: string }[]
   projectId?: string
 }): Promise<void> {
+  if (isStandaloneDevMode()) return
   const payload = JSON.stringify({
     v: 1,
     calendarEventId: event.id,
