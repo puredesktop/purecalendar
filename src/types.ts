@@ -13,11 +13,15 @@ export interface CalendarSettings {
   availableEndHour?: number
   timeZoneMode?: 'system' | 'fixed'
   timeZone?: string
+  /** Optional second IANA timezone displayed alongside the primary timezone. */
+  secondaryTimeZone?: string
   icsFeeds?: Array<{
     id: string
     label: string
     url: string
     visible: boolean
+    lastSyncedAt?: string
+    lastSyncError?: string
   }>
   /** Set once the user has answered the "remove sample events?" prompt. */
   demoCleared?: boolean
@@ -55,6 +59,10 @@ export interface Calendar {
   color: string
   visible: boolean
   readOnly?: boolean
+  /** ISO timestamp of the last successful sync for this calendar. */
+  lastSyncedAt?: string
+  /** Last sync error message for this calendar, if any. */
+  lastSyncError?: string
 }
 
 export interface EventAttendee {
@@ -166,6 +174,12 @@ export interface CalendarStore {
    * "this calendar is now empty".
    */
   failedCalendarIds?: string[]
+  /**
+   * Transient window covered by the provider fetch that produced this store.
+   * `mergeGoogleSnapshot` keeps synced events outside this window so far-future
+   * or past events are never wiped by a bounded refresh.
+   */
+  fetchedWindow?: { start: string; end: string }
   /**
    * Tombstones for deleted provider-backed events. A locally-deleted Google
    * event would otherwise resurrect on the next snapshot merge; its id stays

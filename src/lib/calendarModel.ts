@@ -3,6 +3,7 @@ import type {
   CalendarInviteIntent,
   CalendarInviteResponse,
 } from '@purescience/platform-ui/bridge/calendarInviteIntent'
+import { parseRfc5545Recurrence } from './googleRecurrence'
 import type {
   BusyStatus,
   Calendar,
@@ -78,17 +79,28 @@ export function systemTimeZone(): string {
   }
 }
 
+const validTimeZoneCache = new Map<string, boolean>()
+
 export function isValidTimeZone(
   timeZone: string | undefined,
 ): timeZone is string {
   if (!timeZone) return false
+  const cached = validTimeZoneCache.get(timeZone)
+  if (cached !== undefined) return cached
+  let valid = false
   try {
     new Intl.DateTimeFormat(undefined, { timeZone }).format(new Date())
-    return true
+    valid = true
   } catch {
     // Deliberately silent: the throw IS the validation result here.
-    return false
+    valid = false
   }
+  if (validTimeZoneCache.size >= 64) {
+    const oldest = validTimeZoneCache.keys().next().value
+    if (oldest !== undefined) validTimeZoneCache.delete(oldest)
+  }
+  validTimeZoneCache.set(timeZone, valid)
+  return valid
 }
 
 export function resolveCalendarTimeZone(settings: CalendarSettings): {
@@ -249,16 +261,35 @@ const zonedFormatters = new Map<string, Intl.DateTimeFormat>()
 function zonedFormatter(timeZone: string): Intl.DateTimeFormat {
   const cached = zonedFormatters.get(timeZone)
   if (cached) return cached
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-  })
+  let formatter: Intl.DateTimeFormat
+  try {
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    })
+  } catch {
+    const fallback = systemTimeZone()
+    const cachedFallback = zonedFormatters.get(fallback)
+    if (cachedFallback) return cachedFallback
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: fallback,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    })
+    zonedFormatters.set(fallback, formatter)
+    return formatter
+  }
   if (zonedFormatters.size >= 32) {
     const oldest = zonedFormatters.keys().next().value
     if (oldest !== undefined) zonedFormatters.delete(oldest)
@@ -316,15 +347,71 @@ export function instantFromZonedWallTime(
   return new Date(second).toISOString()
 }
 
+const BARE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * Parse an event boundary (`startsAt` / `endsAt`) into epoch milliseconds.
+ * Bare `YYYY-MM-DD` all-day dates from Google or Team calendars are resolved
+ * at local midnight in `timeZone` rather than UTC midnight (which would shift
+ * them 1 day early in negative-UTC timezones).
+ */
+export function parseEventBoundMs(iso: string, timeZone?: string): number {
+  const trimmed = iso.trim()
+  if (!trimmed) return Number.NaN
+  if (BARE_DATE_RE.test(trimmed)) {
+    const tz = timeZone && isValidTimeZone(timeZone) ? timeZone : systemTimeZone()
+    return Date.parse(instantFromZonedWallTime(trimmed, 0, 0, tz))
+  }
+  return Date.parse(trimmed)
+}
+
 export function dateKeyInTimeZone(
   iso: string | Date,
   timeZone: string,
 ): string {
+  if (typeof iso === 'string' && BARE_DATE_RE.test(iso.trim())) {
+    return iso.trim()
+  }
   const date = iso instanceof Date ? iso : new Date(iso)
-  const parts = zonedParts(date, timeZone)
+  if (Number.isNaN(date.getTime())) return ''
+  const parts = zonedParts(date, timeZone || systemTimeZone())
   return `${parts.year.toString().padStart(4, '0')}-${parts.month
     .toString()
     .padStart(2, '0')}-${parts.day.toString().padStart(2, '0')}`
+}
+
+/**
+ * The last INCLUSIVE calendar day (`YYYY-MM-DD`) covered by an all-day event.
+ * Stored `endsAt` is exclusive (RFC 5545 / Google), so a 1-day event on
+ * 2026-07-10 has `endsAt` on 2026-07-11 and inclusive end date `2026-07-10`.
+ */
+export function allDayInclusiveEndDateKey(
+  event: Pick<CalendarEvent, 'startsAt' | 'endsAt' | 'timeZone'>,
+  fallbackTimeZone: string = systemTimeZone(),
+): string {
+  const tz = isValidTimeZone(event.timeZone) ? event.timeZone : fallbackTimeZone
+  const startKey = dateKeyInTimeZone(event.startsAt, tz)
+  const endKey = dateKeyInTimeZone(event.endsAt, tz)
+  if (!startKey || !endKey) return startKey || endKey
+  const prev = addDaysToDateKey(endKey, -1)
+  return prev >= startKey ? prev : startKey
+}
+
+/**
+ * Convert inclusive start/end `YYYY-MM-DD` date inputs from the UI into stored
+ * all-day `[startsAt, endsAt)` boundaries in `timeZone`.
+ */
+export function allDayRangeFromInclusiveDates(
+  startDateKey: string,
+  inclusiveEndDateKey: string,
+  timeZone: string,
+): { startsAt: string; endsAt: string } {
+  const safeZone = isValidTimeZone(timeZone) ? timeZone : systemTimeZone()
+  const endKey = inclusiveEndDateKey >= startDateKey ? inclusiveEndDateKey : startDateKey
+  return {
+    startsAt: instantFromZonedWallTime(startDateKey, 0, 0, safeZone),
+    endsAt: instantFromZonedWallTime(addDaysToDateKey(endKey, 1), 0, 0, safeZone),
+  }
 }
 
 function addDaysToDateKey(dateKey: string, days: number): string {
@@ -444,13 +531,16 @@ export function parseQuickCalendarEvent(
 
   let hour = options.defaultHour ?? 9
   let minute = options.defaultMinute ?? 0
+  // Require at least one explicit time marker (`at`, `:MM`, or `am|pm`) so
+  // ordinary numbers in titles ("1-on-1", "Sprint 14 review", "Q3 planning")
+  // are never mistaken for clock hours.
   const timeMatch = title.match(
-    /\b(?:at\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i,
+    /(?:\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b|\b(\d{1,2}):(\d{2})\s*(am|pm)?\b|\b(\d{1,2})\s*(am|pm)\b)/i,
   )
   if (timeMatch) {
-    const parsedHour = Number(timeMatch[1])
-    const parsedMinute = Number(timeMatch[2] ?? '0')
-    const meridiem = timeMatch[3]?.toLowerCase()
+    const parsedHour = Number(timeMatch[1] ?? timeMatch[4] ?? timeMatch[7])
+    const parsedMinute = Number(timeMatch[2] ?? timeMatch[5] ?? '0')
+    const meridiem = (timeMatch[3] ?? timeMatch[6] ?? timeMatch[8])?.toLowerCase()
     if (parsedHour <= 23 && parsedMinute <= 59) {
       if (meridiem === 'pm' && parsedHour < 12) hour = parsedHour + 12
       else if (meridiem === 'am' && parsedHour === 12) hour = 0
@@ -476,10 +566,11 @@ export function parseQuickCalendarEvent(
 }
 
 export function formatTimeInTimeZone(iso: string, timeZone: string): string {
+  const safeZone = isValidTimeZone(timeZone) ? timeZone : systemTimeZone()
   return new Intl.DateTimeFormat(undefined, {
     hour: 'numeric',
     minute: '2-digit',
-    timeZone,
+    timeZone: safeZone,
   }).format(new Date(iso))
 }
 
@@ -487,12 +578,22 @@ export function formatDayInTimeZone(
   iso: string | Date,
   timeZone: string,
 ): string {
+  const safeZone = isValidTimeZone(timeZone) ? timeZone : systemTimeZone()
+  if (typeof iso === 'string' && BARE_DATE_RE.test(iso.trim())) {
+    const noon = instantFromZonedWallTime(iso.trim(), 12, 0, safeZone)
+    return new Intl.DateTimeFormat(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      timeZone: safeZone,
+    }).format(new Date(noon))
+  }
   const date = iso instanceof Date ? iso : new Date(iso)
   return new Intl.DateTimeFormat(undefined, {
     weekday: 'short',
     month: 'short',
     day: 'numeric',
-    timeZone,
+    timeZone: safeZone,
   }).format(date)
 }
 
@@ -582,36 +683,94 @@ export function expandRecurringEvent(
   rangeStart: string,
   rangeEnd: string,
 ): CalendarEvent[] {
-  if (!event.recurrenceRule)
-    return event.endsAt > rangeStart && event.startsAt < rangeEnd ? [event] : []
-  const rule = event.recurrenceRule
-  const excludedStartsAt = new Set(rule.excludedStartsAt ?? [])
-  const duration = Date.parse(event.endsAt) - Date.parse(event.startsAt)
-  // A malformed startsAt/endsAt (bad import, hand-edited store) makes
-  // `duration` NaN; the occurrence loop would then build an Invalid Date and
-  // .toISOString() throws — blanking the ENTIRE calendar render, not just
-  // this event. Degrade to the non-recurring window check instead so one bad
-  // record can never take out the view.
-  if (!Number.isFinite(duration)) {
-    return event.endsAt > rangeStart && event.startsAt < rangeEnd ? [event] : []
-  }
-  // Occurrences repeat at the event's wall time in the EVENT's timezone.
-  // An invalid/missing zone (bad import) falls back to the system zone so
-  // one bad record cannot throw and blank the whole calendar render.
   const timeZone = isValidTimeZone(event.timeZone)
     ? event.timeZone
     : systemTimeZone()
+  const rangeStartMs = parseEventBoundMs(rangeStart, timeZone)
+  const rangeEndMs = parseEventBoundMs(rangeEnd, timeZone)
+  const baseStartMs = parseEventBoundMs(event.startsAt, timeZone)
+  const baseEndMs = parseEventBoundMs(event.endsAt, timeZone)
+
+  const overlapsWindow = (startMs: number, endMs: number): boolean => {
+    if (Number.isFinite(rangeStartMs) && Number.isFinite(rangeEndMs) && Number.isFinite(startMs) && Number.isFinite(endMs)) {
+      return endMs > rangeStartMs && startMs < rangeEndMs
+    }
+    return event.endsAt > rangeStart && event.startsAt < rangeEnd
+  }
+
+  if (!event.recurrenceRule) {
+    return overlapsWindow(baseStartMs, baseEndMs) ? [event] : []
+  }
+
+  const rule = event.recurrenceRule
+  const interval = Math.max(1, Math.floor(rule.interval || 1))
+  const excludedStartsAt = new Set(rule.excludedStartsAt ?? [])
+  const excludedMs = new Set(
+    (rule.excludedStartsAt ?? [])
+      .map(value => parseEventBoundMs(value, timeZone))
+      .filter(Number.isFinite),
+  )
+  const duration = baseEndMs - baseStartMs
+  if (!Number.isFinite(duration) || !Number.isFinite(baseStartMs)) {
+    return overlapsWindow(baseStartMs, baseEndMs) ? [event] : []
+  }
+
+  const allDaySpanDays = event.allDay
+    ? Math.max(1, Math.round(duration / DAY_MS))
+    : 0
+  const baseNormalizedStart = BARE_DATE_RE.test(event.startsAt.trim())
+    ? instantFromZonedWallTime(event.startsAt.trim(), 0, 0, timeZone)
+    : event.startsAt
+  const untilMs = rule.until
+    ? BARE_DATE_RE.test(rule.until.trim())
+      ? parseEventBoundMs(addDaysToDateKey(rule.until.trim(), 1), timeZone) - 1
+      : Date.parse(rule.until)
+    : Number.POSITIVE_INFINITY
+
   const instances: CalendarEvent[] = []
-  let startsAt = event.startsAt
   let index = 0
-  while (index < (rule.count ?? 365)) {
-    const endsAt = new Date(Date.parse(startsAt) + duration).toISOString()
-    if (rule.until && startsAt > rule.until) break
-    if (
-      !excludedStartsAt.has(startsAt) &&
-      endsAt > rangeStart &&
-      startsAt < rangeEnd
-    ) {
+  // Fast-forward unbounded or long-running daily/weekly series that started
+  // far before `rangeStart`, so multi-year daily standups never get cut off.
+  if (
+    Number.isFinite(rangeStartMs) &&
+    baseStartMs + duration < rangeStartMs &&
+    (rule.frequency === 'daily' || rule.frequency === 'weekly')
+  ) {
+    const stepDays = rule.frequency === 'daily' ? interval : interval * 7
+    const roughJump = Math.floor((rangeStartMs - (baseStartMs + duration)) / (stepDays * DAY_MS)) - 2
+    if (roughJump > 0) index = roughJump
+  }
+
+  const maxIndex =
+    typeof rule.count === 'number' && Number.isFinite(rule.count)
+      ? Math.max(0, Math.floor(rule.count))
+      : index + 20_000
+  let safety = 0
+  while (index < maxIndex && safety < 25_000) {
+    safety += 1
+    const startsAt =
+      index === 0
+        ? event.startsAt
+        : occurrenceStartsAt(baseNormalizedStart, { ...rule, interval }, index, timeZone)
+    const startMs = parseEventBoundMs(startsAt, timeZone)
+    if (!Number.isFinite(startMs)) break
+    if (startMs > untilMs) break
+    if (Number.isFinite(rangeEndMs) && startMs >= rangeEndMs) break
+
+    const endsAt = event.allDay
+      ? shiftWallTimeInZone(
+          BARE_DATE_RE.test(startsAt.trim())
+            ? instantFromZonedWallTime(startsAt.trim(), 0, 0, timeZone)
+            : startsAt,
+          timeZone,
+          { days: allDaySpanDays },
+        )
+      : new Date(startMs + duration).toISOString()
+    const endMs = parseEventBoundMs(endsAt, timeZone)
+
+    const isExcluded =
+      excludedStartsAt.has(startsAt) || excludedMs.has(startMs)
+    if (!isExcluded && overlapsWindow(startMs, endMs)) {
       instances.push({
         ...event,
         id: index === 0 ? event.id : `${event.id}#${index}`,
@@ -619,9 +778,7 @@ export function expandRecurringEvent(
         endsAt,
       })
     }
-    if (startsAt > rangeEnd) break
     index += 1
-    startsAt = occurrenceStartsAt(event.startsAt, rule, index, timeZone)
   }
   return instances
 }
@@ -635,12 +792,100 @@ export function recurrenceInstanceIndex(eventId: string): number {
   return match ? Number(match[1]) : 0
 }
 
+/**
+ * Resolve the concrete occurrence `#N` of a recurring `baseEvent` so scoped
+ * edits/deletions from agent tools act on occurrence `#N`'s actual timestamps
+ * rather than occurrence `#0`.
+ */
+export function resolveRecurringOccurrence(
+  baseEvent: CalendarEvent,
+  eventId: string,
+): CalendarEvent {
+  const index = recurrenceInstanceIndex(eventId)
+  if (!baseEvent.recurrenceRule || index <= 0) {
+    return { ...baseEvent, id: eventId }
+  }
+  const timeZone = isValidTimeZone(baseEvent.timeZone)
+    ? baseEvent.timeZone
+    : systemTimeZone()
+  const interval = Math.max(1, Math.floor(baseEvent.recurrenceRule.interval || 1))
+  const baseStartMs = parseEventBoundMs(baseEvent.startsAt, timeZone)
+  const baseEndMs = parseEventBoundMs(baseEvent.endsAt, timeZone)
+  const duration = Math.max(60_000, baseEndMs - baseStartMs)
+  const baseNormalizedStart = BARE_DATE_RE.test(baseEvent.startsAt.trim())
+    ? instantFromZonedWallTime(baseEvent.startsAt.trim(), 0, 0, timeZone)
+    : baseEvent.startsAt
+  const startsAt = occurrenceStartsAt(
+    baseNormalizedStart,
+    { ...baseEvent.recurrenceRule, interval },
+    index,
+    timeZone,
+  )
+  const startMs = parseEventBoundMs(startsAt, timeZone)
+  const allDaySpanDays = baseEvent.allDay
+    ? Math.max(
+        1,
+        Math.round(
+          (Date.parse(`${dateKeyInTimeZone(baseEvent.endsAt, timeZone)}T00:00:00Z`) -
+            Date.parse(`${dateKeyInTimeZone(baseEvent.startsAt, timeZone)}T00:00:00Z`)) /
+            DAY_MS,
+        ),
+      )
+    : 0
+  const endsAt = baseEvent.allDay
+    ? shiftWallTimeInZone(
+        BARE_DATE_RE.test(startsAt.trim())
+          ? instantFromZonedWallTime(startsAt.trim(), 0, 0, timeZone)
+          : startsAt,
+        timeZone,
+        { days: allDaySpanDays },
+      )
+    : new Date(startMs + duration).toISOString()
+  return {
+    ...baseEvent,
+    id: eventId,
+    startsAt,
+    endsAt,
+  }
+}
+
+/**
+ * Compute the event id that will represent the edited occurrence after
+ * `applyRecurringEventEdit(events, instance, patch, scope)`.
+ * Provider-backed (`g:`) split/detached copies drop the `g:` prefix so sync
+ * creates them as new Google events rather than PATCHing a nonexistent id.
+ */
+export function recurringEditResultId(
+  eventId: string,
+  scope: RecurrenceEditScope,
+): string {
+  const baseId = recurrenceBaseEventId(eventId)
+  const index = recurrenceInstanceIndex(eventId)
+  if (scope === 'all' || (scope === 'following' && index === 0)) {
+    return baseId
+  }
+  const safeBase = baseId.startsWith('g:')
+    ? `evt_${baseId.slice(2).replace(/[^a-zA-Z0-9_-]/g, '_')}`
+    : baseId
+  if (scope === 'following') {
+    return `${safeBase}_following_${index}`
+  }
+  return `${safeBase}_only_${index}`
+}
+
 function splitFollowingRecurrence(
   baseEvent: CalendarEvent,
   instance: CalendarEvent,
   patch: Partial<CalendarEvent>,
 ): { base: CalendarEvent; following: CalendarEvent } {
   const index = recurrenceInstanceIndex(instance.id)
+  const splitStartMs = parseEventBoundMs(instance.startsAt, baseEvent.timeZone)
+  const remainingExclusions = (baseEvent.recurrenceRule?.excludedStartsAt ?? []).filter(
+    iso => parseEventBoundMs(iso, baseEvent.timeZone) >= splitStartMs,
+  )
+  const priorExclusions = (baseEvent.recurrenceRule?.excludedStartsAt ?? []).filter(
+    iso => parseEventBoundMs(iso, baseEvent.timeZone) < splitStartMs,
+  )
   const nextRule: RecurrenceRule | undefined = baseEvent.recurrenceRule
     ? {
         ...baseEvent.recurrenceRule,
@@ -648,7 +893,7 @@ function splitFollowingRecurrence(
           typeof baseEvent.recurrenceRule.count === 'number'
             ? Math.max(1, baseEvent.recurrenceRule.count - index)
             : undefined,
-        excludedStartsAt: undefined,
+        excludedStartsAt: remainingExclusions.length ? remainingExclusions : undefined,
       }
     : undefined
   const baseRule: RecurrenceRule | undefined = baseEvent.recurrenceRule
@@ -656,21 +901,23 @@ function splitFollowingRecurrence(
         ...baseEvent.recurrenceRule,
         count:
           typeof baseEvent.recurrenceRule.count === 'number'
-            ? Math.max(0, index)
+            ? Math.max(1, index)
             : undefined,
         until:
           typeof baseEvent.recurrenceRule.count === 'number'
             ? undefined
-            : new Date(Date.parse(instance.startsAt) - 1).toISOString(),
+            : new Date(splitStartMs - 1).toISOString(),
+        excludedStartsAt: priorExclusions.length ? priorExclusions : undefined,
       }
     : undefined
+  const followingId = recurringEditResultId(instance.id, 'following')
   return {
     base: { ...baseEvent, recurrenceRule: baseRule, syncState: 'pending' },
     following: {
       ...baseEvent,
       ...instance,
       ...patch,
-      id: `${baseEvent.id}_following_${index}`,
+      id: followingId,
       recurrenceRule: nextRule,
       syncState: 'pending',
     },
@@ -685,12 +932,43 @@ export function applyRecurringEventEdit(
 ): CalendarEvent[] {
   const baseId = recurrenceBaseEventId(instance.id)
   const baseEvent = events.find(event => event.id === baseId)
-  if (!baseEvent?.recurrenceRule || scope === 'all') {
-    return events.map(event =>
-      event.id === baseId
-        ? { ...event, ...patch, syncState: 'pending' }
-        : event,
-    )
+  const index = recurrenceInstanceIndex(instance.id)
+  if (!baseEvent?.recurrenceRule || scope === 'all' || (scope === 'following' && index === 0)) {
+    return events.map(event => {
+      if (event.id !== baseId) return event
+      // When editing "all events" from a later occurrence (#index > 0), preserve
+      // the series' original start date and apply only the time/duration delta.
+      let adjustedPatch = patch
+      if (baseEvent && index > 0 && (patch.startsAt !== undefined || patch.endsAt !== undefined)) {
+        const instStartMs = parseEventBoundMs(instance.startsAt, baseEvent.timeZone)
+        const baseStartMs = parseEventBoundMs(baseEvent.startsAt, baseEvent.timeZone)
+        const nextInstStartMs =
+          patch.startsAt !== undefined
+            ? parseEventBoundMs(patch.startsAt, baseEvent.timeZone)
+            : instStartMs
+        const nextInstEndMs =
+          patch.endsAt !== undefined
+            ? parseEventBoundMs(patch.endsAt, baseEvent.timeZone)
+            : parseEventBoundMs(instance.endsAt, baseEvent.timeZone)
+        if (
+          Number.isFinite(instStartMs) &&
+          Number.isFinite(baseStartMs) &&
+          Number.isFinite(nextInstStartMs) &&
+          Number.isFinite(nextInstEndMs)
+        ) {
+          const shiftMs = nextInstStartMs - instStartMs
+          const nextDuration = Math.max(60_000, nextInstEndMs - nextInstStartMs)
+          const shiftedBaseStart = new Date(baseStartMs + shiftMs).toISOString()
+          const shiftedBaseEnd = new Date(baseStartMs + shiftMs + nextDuration).toISOString()
+          adjustedPatch = {
+            ...patch,
+            startsAt: shiftedBaseStart,
+            endsAt: shiftedBaseEnd,
+          }
+        }
+      }
+      return { ...event, ...adjustedPatch, syncState: 'pending' }
+    })
   }
   if (scope === 'following') {
     const { base, following } = splitFollowingRecurrence(
@@ -710,7 +988,7 @@ export function applyRecurringEventEdit(
     ...baseEvent,
     ...instance,
     ...patch,
-    id: `${baseEvent.id}_only_${recurrenceInstanceIndex(instance.id)}`,
+    id: recurringEditResultId(instance.id, 'this'),
     recurrenceRule: undefined,
     syncState: 'pending' as const,
   }
@@ -727,6 +1005,69 @@ export function applyRecurringEventEdit(
     .concat(exception)
 }
 
+/**
+ * Delete a recurring occurrence according to `scope`:
+ * - `'all'` deletes the entire base series (with provider tombstone).
+ * - `'this'` excludes only this occurrence's `startsAt` from the base rule.
+ * - `'following'` truncates the series before this occurrence (or deletes the
+ *   whole series if deleting occurrence #0).
+ */
+export function removeRecurringEventOccurrence(
+  store: CalendarStore,
+  instance: CalendarEvent,
+  scope: RecurrenceEditScope,
+): CalendarStore {
+  const baseId = recurrenceBaseEventId(instance.id)
+  const baseEvent = store.events.find(event => event.id === baseId)
+  if (!baseEvent) return store
+  const index = recurrenceInstanceIndex(instance.id)
+  if (!baseEvent.recurrenceRule || scope === 'all' || (scope === 'following' && index === 0)) {
+    return removeEventWithTombstone(store, baseId)
+  }
+  if (scope === 'this') {
+    const excludedStartsAt = Array.from(
+      new Set([...(baseEvent.recurrenceRule.excludedStartsAt ?? []), instance.startsAt]),
+    ).sort()
+    return {
+      ...store,
+      events: store.events.map(event =>
+        event.id === baseId
+          ? {
+              ...event,
+              recurrenceRule: { ...baseEvent.recurrenceRule!, excludedStartsAt },
+              syncState: 'pending' as const,
+            }
+          : event,
+      ),
+    }
+  }
+  // scope === 'following' && index > 0
+  const splitStartMs = parseEventBoundMs(instance.startsAt, baseEvent.timeZone)
+  const priorExclusions = (baseEvent.recurrenceRule.excludedStartsAt ?? []).filter(
+    iso => parseEventBoundMs(iso, baseEvent.timeZone) < splitStartMs,
+  )
+  const truncatedRule: RecurrenceRule = {
+    ...baseEvent.recurrenceRule,
+    count:
+      typeof baseEvent.recurrenceRule.count === 'number'
+        ? Math.max(1, index)
+        : undefined,
+    until:
+      typeof baseEvent.recurrenceRule.count === 'number'
+        ? undefined
+        : new Date(splitStartMs - 1).toISOString(),
+    excludedStartsAt: priorExclusions.length ? priorExclusions : undefined,
+  }
+  return {
+    ...store,
+    events: store.events.map(event =>
+      event.id === baseId
+        ? { ...event, recurrenceRule: truncatedRule, syncState: 'pending' as const }
+        : event,
+    ),
+  }
+}
+
 export function eventsInRange(
   events: CalendarEvent[],
   start: string,
@@ -735,7 +1076,12 @@ export function eventsInRange(
   return events
     .filter(event => event.status !== 'cancelled')
     .flatMap(event => expandRecurringEvent(event, start, end))
-    .sort((a, b) => a.startsAt.localeCompare(b.startsAt))
+    .sort(
+      (a, b) =>
+        parseEventBoundMs(a.startsAt, a.timeZone) -
+          parseEventBoundMs(b.startsAt, b.timeZone) ||
+        a.startsAt.localeCompare(b.startsAt),
+    )
 }
 
 export function moveEvent(
@@ -801,7 +1147,7 @@ export function cancelEvent(event: CalendarEvent): CalendarEvent {
 }
 
 /** A `g:<calendarId>:<eventId>` id names an event that exists at Google; `t:<id>`, one on the team calendar. */
-function isProviderBackedEventId(eventId: string): boolean {
+export function isProviderBackedEventId(eventId: string): boolean {
   // A team calendar's event already on the organisation's server is `t:`.
   return eventId.startsWith('g:') || eventId.startsWith('t:')
 }
@@ -923,13 +1269,40 @@ export function addLocalCalendar(
   const name = input.name.trim() || 'New calendar'
   const calendar: Calendar = {
     id: `cal_${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 32)}_${Date.now().toString(36)}`,
-    sourceId: store.calendars[0]?.sourceId ?? LOCAL_SOURCE_ID,
+    sourceId: LOCAL_SOURCE_ID,
     name,
     color: input.color,
     visible: true,
   }
+  const accounts = store.accounts.some(account => account.id === LOCAL_ACCOUNT_ID)
+    ? store.accounts
+    : [
+        ...store.accounts,
+        {
+          id: LOCAL_ACCOUNT_ID,
+          provider: 'local' as const,
+          name: 'On this computer',
+          email: '',
+        },
+      ]
+  const sources = store.sources.some(source => source.id === LOCAL_SOURCE_ID)
+    ? store.sources
+    : [
+        ...store.sources,
+        {
+          id: LOCAL_SOURCE_ID,
+          accountId: LOCAL_ACCOUNT_ID,
+          name: 'Local calendars',
+          syncState: 'online' as const,
+        },
+      ]
   return {
-    store: { ...store, calendars: [...store.calendars, calendar] },
+    store: {
+      ...store,
+      accounts,
+      sources,
+      calendars: [...store.calendars, calendar],
+    },
     calendar,
   }
 }
@@ -1141,7 +1514,12 @@ export function allDayEventsInRange(
 ): CalendarEvent[] {
   return eventsInRange(events, start, end)
     .filter(event => event.allDay)
-    .sort((left, right) => left.startsAt.localeCompare(right.startsAt))
+    .sort(
+      (left, right) =>
+        parseEventBoundMs(left.startsAt, left.timeZone) -
+          parseEventBoundMs(right.startsAt, right.timeZone) ||
+        left.startsAt.localeCompare(right.startsAt),
+    )
 }
 
 /**
@@ -1314,7 +1692,7 @@ export function createEventFromCalendarInviteIntent(
     linkedItems: [
       { type: 'email', id: intent.source.threadId, label: intent.source.label },
     ],
-    recurrenceRule: undefined,
+    recurrenceRule: parseRfc5545Recurrence(intent.recurrenceRule),
     // An incoming invitation is a received copy, never a new organizer event.
     source: 'feed',
     syncState: 'synced',
@@ -1344,8 +1722,15 @@ export function upsertInviteEvent(
     return { store, event: existing }
 
   if (intent.method === 'REPLY') {
-    const event = { ...existing, attendees: existing.attendees.map(attendee =>
-      incoming.attendees.find(item => item.email.toLowerCase() === attendee.email.toLowerCase()) ?? attendee) }
+    const event = {
+      ...existing,
+      attendees: existing.attendees.map(attendee =>
+        incoming.attendees.find(
+          item => item.email.toLowerCase() === attendee.email.toLowerCase(),
+        ) ?? attendee,
+      ),
+      syncState: 'pending' as const,
+    }
     return { store: { ...store, events: store.events.map(item => item.id === event.id ? event : item) }, event }
   }
 
@@ -1363,6 +1748,15 @@ export function upsertInviteEvent(
       ? { ...attendee, response: local.response }
       : attendee
   })
+  const mergedLinkedItems = [
+    ...existing.linkedItems,
+    ...incoming.linkedItems.filter(
+      item =>
+        !existing.linkedItems.some(
+          kept => kept.type === item.type && kept.id === item.id,
+        ),
+    ),
+  ]
 
   const updated: CalendarEvent = {
     ...existing,
@@ -1384,7 +1778,8 @@ export function upsertInviteEvent(
       response === 'needsAction' ? existing.busyStatus : incoming.busyStatus,
     organizer: incoming.organizer,
     attendees: mergedAttendees,
-    linkedItems: incoming.linkedItems,
+    linkedItems: mergedLinkedItems,
+    ...(incoming.recurrenceRule ? { recurrenceRule: incoming.recurrenceRule } : {}),
     syncState: existing.syncState,
   }
   return {
@@ -1404,10 +1799,17 @@ export function visibleScheduledTasks(
   rangeEnd: string,
   calendars: Calendar[] = [],
 ): CalendarTask[] {
+  const startMs = Date.parse(rangeStart)
+  const endMs = Date.parse(rangeEnd)
   return tasks.filter(task => {
     const startsAt = task.scheduledStart ?? task.dueAt
     if (!startsAt) return false
-    if (startsAt < rangeStart || startsAt >= rangeEnd) return false
+    const taskMs = parseEventBoundMs(startsAt)
+    if (Number.isFinite(taskMs) && Number.isFinite(startMs) && Number.isFinite(endMs)) {
+      if (taskMs < startMs || taskMs >= endMs) return false
+    } else if (startsAt < rangeStart || startsAt >= rangeEnd) {
+      return false
+    }
     // Respect calendar visibility. Tasks predate per-task calendars, so an
     // unassigned task is treated as living on the Focus calendar; hiding that
     // calendar hides the tasks too (#241).
@@ -1437,10 +1839,19 @@ export function updateCalendarTask(
   return {
     ...task,
     ...patch,
-    dueAt: patch.dueAt === '' ? undefined : patch.dueAt,
+    dueAt: 'dueAt' in patch ? (patch.dueAt === '' ? undefined : patch.dueAt) : task.dueAt,
     scheduledStart:
-      patch.scheduledStart === '' ? undefined : patch.scheduledStart,
-    scheduledEnd: patch.scheduledEnd === '' ? undefined : patch.scheduledEnd,
+      'scheduledStart' in patch
+        ? patch.scheduledStart === ''
+          ? undefined
+          : patch.scheduledStart
+        : task.scheduledStart,
+    scheduledEnd:
+      'scheduledEnd' in patch
+        ? patch.scheduledEnd === ''
+          ? undefined
+          : patch.scheduledEnd
+        : task.scheduledEnd,
     syncState: 'pending',
   }
 }
@@ -1597,27 +2008,41 @@ export function computeEventReminders(
   const horizon = now + horizonMs
   const reminders: ScheduledReminder[] = []
   for (const event of events) {
-    if (event.status === 'cancelled') continue
-    const startMs = Date.parse(event.startsAt)
-    if (Number.isNaN(startMs)) continue
-    for (const reminder of event.reminders) {
-      const fireAt = startMs - reminder.minutesBefore * 60_000
-      if (fireAt <= now || fireAt > horizon) continue
-      const minutes = reminder.minutesBefore
-      const lead =
-        minutes <= 0
-          ? 'now'
-          : minutes < 60
-            ? `in ${minutes} minute${minutes === 1 ? '' : 's'}`
-            : `in ${Math.round(minutes / 60)} hour${
-                Math.round(minutes / 60) === 1 ? '' : 's'
-              }`
-      reminders.push({
-        id: `reminder:${event.id}:${reminder.id}`,
-        title: event.title || 'Upcoming event',
-        body: `Starts ${lead}`,
-        fireAt,
-      })
+    if (event.status === 'cancelled' || event.lifecycle === 'draft') continue
+    if (!event.reminders.length) continue
+    const maxLeadMs = Math.max(
+      0,
+      ...event.reminders.map(r => Math.max(0, r.minutesBefore) * 60_000),
+    )
+    const occurrences = event.recurrenceRule
+      ? expandRecurringEvent(
+          event,
+          new Date(now).toISOString(),
+          new Date(horizon + maxLeadMs + DAY_MS).toISOString(),
+        )
+      : [event]
+    for (const occurrence of occurrences) {
+      const startMs = parseEventBoundMs(occurrence.startsAt, occurrence.timeZone)
+      if (Number.isNaN(startMs)) continue
+      for (const reminder of occurrence.reminders) {
+        const fireAt = startMs - reminder.minutesBefore * 60_000
+        if (fireAt <= now || fireAt > horizon) continue
+        const minutes = reminder.minutesBefore
+        const lead =
+          minutes <= 0
+            ? 'now'
+            : minutes < 60
+              ? `in ${minutes} minute${minutes === 1 ? '' : 's'}`
+              : `in ${Math.round(minutes / 60)} hour${
+                  Math.round(minutes / 60) === 1 ? '' : 's'
+                }`
+        reminders.push({
+          id: `reminder:${occurrence.id}:${reminder.id}`,
+          title: occurrence.title || 'Upcoming event',
+          body: `Starts ${lead}`,
+          fireAt,
+        })
+      }
     }
   }
   return reminders
@@ -1641,6 +2066,21 @@ export function searchCalendarStore(
 
   for (const event of store.events) {
     const calendar = store.calendars.find(item => item.id === event.calendarId)
+    const safeZone = isValidTimeZone(event.timeZone)
+      ? event.timeZone
+      : systemTimeZone()
+    const dayText = formatDayInTimeZone(event.startsAt, safeZone)
+    const timeText = event.allDay
+      ? 'All day'
+      : formatTimeInTimeZone(event.startsAt, safeZone)
+    const calLabel = calendar?.name ?? 'Calendar'
+    const statusFlags = [
+      calendar && !calendar.visible ? 'hidden' : '',
+      event.status === 'cancelled' ? 'cancelled' : '',
+    ]
+      .filter(Boolean)
+      .join(', ')
+    const whenText = `${calLabel} · ${dayText} · ${timeText}${statusFlags ? ` (${statusFlags})` : ''}`
     const attendeeText = event.attendees
       .map(attendee => `${attendee.name} ${attendee.email}`)
       .join(' ')
@@ -1661,13 +2101,10 @@ export function searchCalendarStore(
         id: event.id,
         type: 'event',
         title: event.title,
-        subtitle: `${calendar?.name ?? 'Calendar'} · ${formatDayInTimeZone(
-          event.startsAt,
-          event.timeZone,
-        )}`,
+        subtitle: whenText,
         startsAt: event.startsAt,
         eventId: event.id,
-        timeZone: event.timeZone,
+        timeZone: safeZone,
         recurrenceRule: event.recurrenceRule ?? null,
       })
     }
@@ -1676,24 +2113,24 @@ export function searchCalendarStore(
         id: `${event.id}:location`,
         type: 'location',
         title: event.location,
-        subtitle: event.title,
+        subtitle: `${event.title} · ${whenText}`,
         startsAt: event.startsAt,
         eventId: event.id,
-        timeZone: event.timeZone,
+        timeZone: safeZone,
         recurrenceRule: event.recurrenceRule ?? null,
       })
     }
     for (const attendee of event.attendees) {
-      const attendeeText = `${attendee.name} ${attendee.email}`.toLowerCase()
-      if (!attendeeText.includes(normalized)) continue
+      const attendeeSearch = `${attendee.name} ${attendee.email}`.toLowerCase()
+      if (!attendeeSearch.includes(normalized)) continue
       pushUnique({
         id: `${event.id}:attendee:${attendee.email}`,
         type: 'person',
         title: attendee.name,
-        subtitle: `${attendee.email} · ${event.title}`,
+        subtitle: `${attendee.email} · ${event.title} · ${dayText}`,
         startsAt: event.startsAt,
         eventId: event.id,
-        timeZone: event.timeZone,
+        timeZone: safeZone,
         recurrenceRule: event.recurrenceRule ?? null,
       })
     }
@@ -1705,20 +2142,26 @@ export function searchCalendarStore(
       .join(' ')
       .toLowerCase()
     if (!searchable.includes(normalized)) continue
+    const taskWhen = task.scheduledStart ?? task.dueAt
+    const taskDateLabel = taskWhen
+      ? ` · ${formatDayInTimeZone(taskWhen, systemTimeZone())}`
+      : ''
     pushUnique({
       id: task.id,
       type: 'task',
       title: task.title,
-      subtitle: `${task.sourceLabel} · ${task.status}`,
-      startsAt: task.scheduledStart ?? task.dueAt,
+      subtitle: `${task.sourceLabel} · ${task.status}${taskDateLabel}`,
+      startsAt: taskWhen,
       taskId: task.id,
     })
   }
 
   return results
-    .sort((left, right) =>
-      (left.startsAt ?? '').localeCompare(right.startsAt ?? ''),
-    )
+    .sort((left, right) => {
+      const leftMs = left.startsAt ? parseEventBoundMs(left.startsAt, left.timeZone) : Number.POSITIVE_INFINITY
+      const rightMs = right.startsAt ? parseEventBoundMs(right.startsAt, right.timeZone) : Number.POSITIVE_INFINITY
+      return leftMs - rightMs
+    })
     .slice(0, limit)
 }
 
@@ -1730,12 +2173,27 @@ export function demoCalendarStore(): CalendarStore {
   }
 }
 
-export function weekRange(anchor: Date): { start: string; end: string } {
+export function weekRange(
+  anchor: Date,
+  timeZone?: string,
+): { start: string; end: string } {
+  if (timeZone && isValidTimeZone(timeZone)) {
+    const anchorKey = dateKeyInTimeZone(anchor, timeZone)
+    const offset = (weekdayForDateKey(anchorKey) + 6) % 7
+    const mondayKey = addDaysToDateKey(anchorKey, -offset)
+    const nextMondayKey = addDaysToDateKey(mondayKey, 7)
+    return {
+      start: instantFromZonedWallTime(mondayKey, 0, 0, timeZone),
+      end: instantFromZonedWallTime(nextMondayKey, 0, 0, timeZone),
+    }
+  }
   const start = new Date(anchor)
   start.setHours(0, 0, 0, 0)
   start.setDate(start.getDate() - ((start.getDay() + 6) % 7))
+  const end = new Date(start)
+  end.setDate(end.getDate() + 7)
   return {
     start: start.toISOString(),
-    end: new Date(start.getTime() + 7 * DAY_MS).toISOString(),
+    end: end.toISOString(),
   }
 }

@@ -13,7 +13,9 @@ import type {
 } from '../types'
 import { systemTimeZone } from './calendarModel'
 import {
+  allDayDateKey,
   isScopedRecurrenceException,
+  parseRfc5545Recurrence,
   recurrenceLinesForGoogle,
 } from './googleRecurrence'
 
@@ -188,6 +190,7 @@ export function calendarEventFromGoogle(
           'tentative'
         ? 'tentative'
         : 'busy'
+  const recurrenceRule = parseRfc5545Recurrence(event.recurrence)
   return {
     id: googleEventLocalId(calendarId, event.id),
     calendarId,
@@ -231,6 +234,7 @@ export function calendarEventFromGoogle(
         sizeLabel: '',
       })),
     linkedItems: [],
+    ...(recurrenceRule ? { recurrenceRule } : {}),
     source: 'provider',
     syncState: 'synced',
   }
@@ -249,15 +253,20 @@ function sendUpdatesQuery(event: CalendarEvent): string {
 
 export function googleEventBodyFromCalendarEvent(
   event: CalendarEvent,
+  options: { forPatch?: boolean } = {},
 ): Record<string, unknown> {
   const time = (iso: string): Record<string, unknown> =>
     event.allDay
-      ? { date: iso.slice(0, 10) }
+      ? { date: allDayDateKey(iso, event.timeZone) }
       : { dateTime: iso, timeZone: event.timeZone }
   return {
     summary: event.title,
     description: event.description,
-    ...(event.location ? { location: event.location } : {}),
+    ...(event.location
+      ? { location: event.location }
+      : options.forPatch
+        ? { location: '' }
+        : {}),
     start: time(event.startsAt),
     end: time(event.endsAt),
     status: event.status,
@@ -291,9 +300,12 @@ export function googleEventBodyFromCalendarEvent(
           recurrence: recurrenceLinesForGoogle(
             event.recurrenceRule,
             event.allDay,
+            event.timeZone,
           ),
         }
-      : {}),
+      : options.forPatch
+        ? { recurrence: [] }
+        : {}),
   }
 }
 
@@ -494,7 +506,8 @@ export class GoogleCalendarProvider implements CalendarProvider {
       name: 'Google Calendar',
       syncState: 'online',
     }
-    const mappedCalendars: Calendar[] = calendars.map(calendar => ({
+    const syncedAt = new Date().toISOString()
+    const mappedCalendars: Calendar[] = calendars.map((calendar, index) => ({
       id: calendar.id,
       sourceId: source.id,
       name: calendar.summary ?? calendar.id,
@@ -504,6 +517,9 @@ export class GoogleCalendarProvider implements CalendarProvider {
       calendar.accessRole === 'freeBusyReader'
         ? { readOnly: true }
         : {}),
+      ...(snapshots[index]?.failed
+        ? { lastSyncError: 'Could not refresh this calendar.' }
+        : { lastSyncedAt: syncedAt }),
     }))
 
     // Every calendar failing is a failed sync, not an empty account.
@@ -520,6 +536,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
       events,
       tasks: [],
       settings: {},
+      fetchedWindow: { start: timeMin, end: timeMax },
       ...(failedCalendarIds.length > 0 ? { failedCalendarIds } : {}),
     }
   }
@@ -647,7 +664,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
       `/calendars/${encodeURIComponent(ref.calendarId)}/events/${encodeURIComponent(ref.eventId)}${sendUpdatesQuery(event)}`,
       {
         method: 'PATCH',
-        body: JSON.stringify(googleEventBodyFromCalendarEvent(event)),
+        body: JSON.stringify(googleEventBodyFromCalendarEvent(event, { forPatch: true })),
       },
     )
     return {

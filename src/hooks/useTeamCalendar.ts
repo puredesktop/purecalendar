@@ -62,7 +62,12 @@ export function useTeamCalendar({
   const callbacks = useRef({ onRenamed, onNotice })
   callbacks.current = { onRenamed, onNotice }
   const busyRef = useRef(false)
+  const retryTimerRef = useRef<number | null>(null)
   const [retry, setRetry] = useState(0)
+
+  useEffect(() => () => {
+    if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current)
+  }, [])
 
   const refresh = useCallback(async (): Promise<void> => {
     if (!teamCalendarOffered()) return
@@ -164,7 +169,13 @@ export function useTeamCalendar({
           callbacks.current.onNotice(`${who.join(', ')} ${who.length === 1 ? 'is' : 'are'} already booked then (${outcome.clashes.map(clash => clash.title).join(', ')}).`)
         }
       }
-      if (transient) window.setTimeout(() => setRetry(value => value + 1), 30_000)
+      if (transient) {
+        if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current)
+        retryTimerRef.current = window.setTimeout(() => {
+          retryTimerRef.current = null
+          setRetry(value => value + 1)
+        }, 30_000)
+      }
     }, 1200)
     return () => window.clearTimeout(timer)
   }, [enabled, store, meta, retry, setStore, holdId])

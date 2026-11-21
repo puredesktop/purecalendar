@@ -22,9 +22,13 @@ export function useBackgroundWork(): boolean {
     let disposed = false
     let held = false
     const settle = (app: unknown): void => {
-      if (disposed || held) return
-      if (heldInMessage(app)) held = true
-      else setAllowed(true)
+      if (disposed) return
+      if (heldInMessage(app)) {
+        held = true
+        setAllowed(false)
+        return
+      }
+      if (!held) setAllowed(true)
     }
     const receive = (event: MessageEvent): void => {
       if (event.source !== window.parent || event.data?.type !== 'pure:adjacent-app' || !heldInMessage(event.data.app)) return

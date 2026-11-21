@@ -5,6 +5,7 @@ import {
   pullCalendarStoreFile,
   pushCalendarSettings,
   saveCalendarStoreFile,
+  syncLastSeenStore,
   type StoreChanges,
 } from '../lib/calendarStoreFile'
 import type { CalendarStore } from '../types'
@@ -18,7 +19,11 @@ const LOOK_EVERY_MS = 15_000
  * Several copies of Calendar can run over one file (a tab and a copy held in a page), so a write merges with the file
  * record by record (lib/calendarStoreMerge.ts), and what the others saved comes back into this copy's store. */
 export function useCalendarStorePersistence(store: CalendarStore, setStore?: Dispatch<SetStateAction<CalendarStore>>) {
-  const serialized = useMemo(() => JSON.stringify(store), [store])
+  // Exclude transient runtime-only sync markers from dirty-state serialization.
+  const serialized = useMemo(() => {
+    const { failedCalendarIds: _f, fetchedWindow: _w, ...persistable } = store
+    return JSON.stringify(persistable)
+  }, [store])
   const current = useRef({ serialized, value: store })
   current.current = { serialized, value: store }
   const persisted = useRef(current.current)
@@ -45,7 +50,13 @@ export function useCalendarStorePersistence(store: CalendarStore, setStore?: Dis
     return () => { mounted.current = false }
   }, [])
 
-  useEffect(() => { noteStoreChange(store) }, [store])
+  useEffect(() => {
+    if (store === fromDisk.current) {
+      syncLastSeenStore(store)
+      return
+    }
+    noteStoreChange(store)
+  }, [store])
 
   const takeIn = useCallback((changes: StoreChanges | null): void => {
     if (!changes || !mounted.current) return

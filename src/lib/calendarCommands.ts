@@ -33,10 +33,20 @@ const COMMANDS_BY_SHORTCUT = new Map<string, CalendarCommandId>([
 
 export function calendarCommandForKey(
   key: string,
-  modifiers: { metaKey?: boolean; ctrlKey?: boolean } = {},
+  modifiers: {
+    metaKey?: boolean
+    ctrlKey?: boolean
+    altKey?: boolean
+    shiftKey?: boolean
+  } = {},
 ): CalendarCommandId | null {
-  if ((modifiers.metaKey || modifiers.ctrlKey) && key.toLowerCase() === 'z') {
-    return 'undo-last-change'
+  const lower = key.toLowerCase()
+  if ((modifiers.metaKey || modifiers.ctrlKey) && !modifiers.altKey) {
+    if (lower === 'z' && !modifiers.shiftKey) {
+      return 'undo-last-change'
+    }
+    return null
   }
-  return COMMANDS_BY_SHORTCUT.get(key.toLowerCase()) ?? null
+  if (modifiers.altKey) return null
+  return COMMANDS_BY_SHORTCUT.get(lower) ?? null
 }

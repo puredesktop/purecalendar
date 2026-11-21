@@ -140,13 +140,14 @@ export function mergeTeamSnapshot(local: CalendarStore, listing: TeamCalendarLis
   ]
   const removed = new Set(local.settings.removedCalendarIds ?? [])
   const had = new Map(local.calendars.map(calendar => [calendar.id, calendar]))
+  const syncedAt = new Date().toISOString()
   const calendars: Calendar[] = wanted
     .filter(calendar => !removed.has(calendar.id))
     .map((calendar, index) => {
       const before = had.get(calendar.id)
       return before
-        ? { ...before, name: calendar.name, sourceId: TEAM_SOURCE_ID, readOnly: false }
-        : { id: calendar.id, sourceId: TEAM_SOURCE_ID, name: calendar.name, color: TEAM_COLOURS[index % TEAM_COLOURS.length], visible: true, readOnly: false }
+        ? { ...before, name: calendar.name, sourceId: TEAM_SOURCE_ID, readOnly: false, lastSyncedAt: syncedAt, lastSyncError: undefined }
+        : { id: calendar.id, sourceId: TEAM_SOURCE_ID, name: calendar.name, color: TEAM_COLOURS[index % TEAM_COLOURS.length], visible: true, readOnly: false, lastSyncedAt: syncedAt }
     })
   const calendarIds = new Set(calendars.map(calendar => calendar.id))
   const unsent = local.events.filter(event => isTeamEvent(event) && event.syncState !== 'synced')
@@ -174,7 +175,12 @@ export function mergeTeamSnapshot(local: CalendarStore, listing: TeamCalendarLis
 /** Team events changed here and ready to send: titled (the server needs a title) and not a private draft. */
 export function teamEventsToSend(store: CalendarStore): CalendarEvent[] {
   return store.events.filter(
-    event => isTeamEvent(event) && event.syncState === 'pending' && event.title.trim().length > 0 && (event.team?.mayEdit ?? true),
+    event =>
+      isTeamEvent(event) &&
+      event.syncState === 'pending' &&
+      event.lifecycle !== 'draft' &&
+      event.title.trim().length > 0 &&
+      (event.team?.mayEdit ?? true),
   )
 }
 export const teamTombstones = (store: CalendarStore): string[] => (store.removedEventIds ?? []).filter(id => teamServerId(id) !== null)
@@ -198,15 +204,32 @@ export function mergeTeamPushResult(
   timeZone: string,
 ): { store: CalendarStore; renamed: Map<string, string> } {
   const renamed = new Map<string, string>()
+  if (outcomes.length === 0) return { store: current, renamed }
   let events = current.events
   let removedEventIds = current.removedEventIds ?? []
+  let removedChanged = false
   for (const outcome of outcomes) {
     if (outcome.kind === 'removed') {
-      removedEventIds = removedEventIds.filter(id => id !== outcome.id)
+      const filtered = removedEventIds.filter(id => id !== outcome.id)
+      if (filtered.length !== removedEventIds.length) {
+        removedEventIds = filtered
+        removedChanged = true
+      }
       continue
     }
     const at = events.findIndex(event => event.id === outcome.sent.id)
-    if (at < 0) continue
+    if (at < 0) {
+      // If a newly created team event was deleted locally while create was in
+      // flight, tombstone its new server id so it does not resurrect on refresh.
+      if (outcome.kind === 'saved') {
+        const serverLocalId = `${EVENT_PREFIX}${outcome.event.id}`
+        if (!removedEventIds.includes(serverLocalId)) {
+          removedEventIds = [...removedEventIds, serverLocalId]
+          removedChanged = true
+        }
+      }
+      continue
+    }
     const now = events[at]!
     const unchanged = now === outcome.sent
     let next: CalendarEvent
@@ -221,7 +244,17 @@ export function mergeTeamPushResult(
     }
     events = [...events.slice(0, at), next, ...events.slice(at + 1)]
   }
-  return { store: { ...current, events, removedEventIds }, renamed }
+  if (events === current.events && !removedChanged) {
+    return { store: current, renamed }
+  }
+  return {
+    store: {
+      ...current,
+      events,
+      ...(removedChanged || current.removedEventIds ? { removedEventIds } : {}),
+    },
+    renamed,
+  }
 }
 
 /**
