@@ -1,8 +1,119 @@
-export type CalendarView = 'day' | 'week' | 'month' | 'agenda'
+export type CalendarView = 'day' | 'threeDay' | 'week' | 'month' | 'agenda'
 export type EventStatus = 'confirmed' | 'tentative' | 'cancelled'
 export type BusyStatus = 'busy' | 'free' | 'tentative'
 export type SyncState = 'synced' | 'pending' | 'failed' | 'conflict'
 export type EventLifecycle = 'draft' | 'active'
+
+export interface PinnedTimeZone {
+  id: string
+  timeZone: string
+  label: string
+  showOnGrid: boolean
+  workStart?: number
+  workEnd?: number
+}
+
+export interface SavedTimeZoneContact {
+  id: string
+  name: string
+  email?: string
+  timeZone: string
+  workStart?: number
+  workEnd?: number
+  group?: string
+}
+
+export type SchedulingLinkKind = 'booking' | 'oneoff' | 'poll'
+export type PollVoteChoice = 'yes' | 'maybe' | 'no'
+
+export interface SchedulingTimeWindow {
+  start: string
+  end: string
+}
+
+export interface SchedulingAvailabilityConfig {
+  weekdays: Record<string, SchedulingTimeWindow[]>
+  dateOverrides?: Record<string, SchedulingTimeWindow[]>
+  bufferBeforeMinutes: number
+  bufferAfterMinutes: number
+  minNoticeMinutes: number
+  maxBookingsPerDay: number | null
+  rollingDays: number
+  slotStepMinutes: number
+}
+
+export interface SchedulingQuestion {
+  id: string
+  label: string
+  required?: boolean
+  type?: 'text' | 'textarea'
+}
+
+export interface CandidateSlot {
+  start: string
+  end: string
+}
+
+export interface SchedulingLink {
+  id: string
+  kind: SchedulingLinkKind
+  slug: string | null
+  token: string
+  url: string
+  title: string
+  description: string | null
+  location: string | null
+  hostName: string
+  hostEmail: string | null
+  hostTimeZone: string
+  durations: number[]
+  defaultDuration: number
+  availability: SchedulingAvailabilityConfig
+  candidateSlots: CandidateSlot[]
+  questions: SchedulingQuestion[]
+  requireConfirmation: boolean
+  active: boolean
+  expiresAt: number | null
+  bookingCount: number
+  pollVoteCount: number
+  createdAt: number
+  updatedAt: number
+  localOnly?: boolean
+}
+
+export interface SchedulingBooking {
+  id: string
+  linkId: string
+  linkTitle: string
+  linkKind: SchedulingLinkKind
+  status: 'confirmed' | 'pending' | 'cancelled'
+  startsAt: string
+  endsAt: string
+  guestName: string
+  guestEmail: string
+  guestTimeZone: string
+  notes: string | null
+  answers: Record<string, string>
+  manageUrl: string
+  icsUid: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface SchedulingPollVote {
+  id: string
+  voterName: string
+  voterEmail: string
+  voterTimeZone: string
+  votes: Record<string, PollVoteChoice>
+  updatedAt: number
+}
+
+export interface ProposedSlot {
+  start: string
+  end: string
+  holdEventId?: string
+}
 
 export interface CalendarSettings {
   viewMode?: CalendarView
@@ -15,6 +126,18 @@ export interface CalendarSettings {
   timeZone?: string
   /** Optional second IANA timezone displayed alongside the primary timezone. */
   secondaryTimeZone?: string
+  /** Secondary timezones pinned for world clocks and side-by-side grid rails. */
+  pinnedTimeZones?: PinnedTimeZone[]
+  /** Temporary travel/guest timezone preview without modifying the home timezone. */
+  previewTimeZone?: string | null
+  /** Saved contacts & team members with remembered timezones and working hours. */
+  savedContacts?: SavedTimeZoneContact[]
+  /** Whether the left desk navigator rail (mini-month, clocks, calendars, links) is open. */
+  showLeftRail?: boolean
+  /** 12-hour or 24-hour clock display. */
+  timeFormat?: '12h' | '24h'
+  /** Draft / offline scheduling link templates kept locally until PureServer is attached. */
+  localSchedulingLinks?: SchedulingLink[]
   icsFeeds?: Array<{
     id: string
     label: string
@@ -139,6 +262,8 @@ export interface CalendarEvent {
    * each with a `<person id>@team.invalid` address (lib/teamCalendar.ts).
    */
   team?: TeamEventFacts
+  /** Optional group id linking temporary "Share availability" tentative holds for one-click release. */
+  holdGroupId?: string
 }
 
 export interface TeamEventFacts {

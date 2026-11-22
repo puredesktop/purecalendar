@@ -70,6 +70,17 @@ import {
   setMeetingSources,
 } from '../agents/handlers'
 import { MeetingTimeFinder } from './MeetingTimeFinder'
+import { DeskLeftRail } from './DeskLeftRail'
+import { MultiZoneHeaderSpacer, MultiZoneTimeRail, totalTimeRailWidth } from './MultiZoneTimeRail'
+import { EventTimeZoneStrip } from './EventTimeZoneStrip'
+import { ShareAvailabilityBar } from './ShareAvailabilityBar'
+import { SchedulingLinksPanel } from './SchedulingLinksPanel'
+import { CommandPalette } from './CommandPalette'
+import { useSchedulingLinks } from '../hooks/useSchedulingLinks'
+import { openPureMailCompose, utf8ToBase64 } from '../lib/schedulingClient'
+import { formatProposedSlotsText } from '../lib/overlapMatrix'
+import { timeZoneDisplayLabel, timeZoneShortCode } from '../lib/timeZoneDirectory'
+import type { CandidateSlot, ProposedSlot } from '../types'
 import { withMeetingDraft } from '../lib/meetingTimes'
 import type { TeamBusyReader } from '../lib/meetingAvailability'
 import { refreshOwnerCalendar } from '../lib/meetingOwnerRefresh'
@@ -1393,9 +1404,10 @@ const CalendarRow = styled.button.attrs(chrome('list-row'))<{ $active?: boolean 
   }
 `
 
-const TimeGrid = styled.div<{ $days: number; $timelineHeight: number }>`
+const TimeGrid = styled.div<{ $days: number; $timelineHeight: number; $gutterWidth?: number }>`
   display: grid;
-  grid-template-columns: var(--calendar-time-gutter-width) repeat(
+  grid-template-columns: ${({ $gutterWidth }) =>
+      $gutterWidth ? `${$gutterWidth}px` : 'var(--calendar-time-gutter-width)'} repeat(
       ${({ $days }) => $days},
       minmax(156px, 1fr)
     );
@@ -1408,8 +1420,44 @@ const TimeGrid = styled.div<{ $days: number; $timelineHeight: number }>`
   width: 100%;
   min-height: 100%;
   min-width: calc(
-    var(--calendar-time-gutter-width) + ${({ $days }) => $days * 156}px
+    ${({ $gutterWidth }) =>
+      $gutterWidth ? `${$gutterWidth}px` : 'var(--calendar-time-gutter-width)'} + ${({ $days }) => $days * 156}px
   );
+`
+
+const ProposedSlotBlock = styled.button`
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  z-index: ${GRID_Z_EVENT + 2};
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  padding: 4px 7px;
+  border: 1.5px dashed var(--platform-colors-accent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--platform-colors-accent) 12%, var(--calendar-page));
+  color: var(--platform-colors-accent-text);
+  font-family: var(--platform-typography-font-family-mono);
+  font-size: 10.5px;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover {
+    background: color-mix(in srgb, var(--platform-colors-accent) 20%, var(--calendar-page));
+  }
+`
+
+const TravelBanner = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--platform-colors-accent);
+  background: var(--platform-colors-surface-subtle);
+  color: var(--platform-colors-text);
+  font-size: 12.5px;
 `
 
 const MonthGrid = styled.div`
@@ -2803,20 +2851,254 @@ export function PureCalendarShell({
     () => resolveCalendarTimeZone(store.settings),
     [store.settings],
   )
-  const displayTimeZone = timeZoneConfig.timeZone
+  const homeTimeZone = timeZoneConfig.timeZone
+  const previewTimeZone = store.settings.previewTimeZone ?? null
+  const displayTimeZone = previewTimeZone || homeTimeZone
   const secondaryTimeZone =
     store.settings.secondaryTimeZone &&
     isValidTimeZone(store.settings.secondaryTimeZone) &&
     store.settings.secondaryTimeZone !== displayTimeZone
       ? store.settings.secondaryTimeZone
       : null
+  const timeFormat: '12h' | '24h' = store.settings.timeFormat === '24h' ? '24h' : '12h'
+  const pinnedTimeZones = store.settings.pinnedTimeZones ?? []
+  const gridSecondaryZones = useMemo(
+    () => pinnedTimeZones.filter(z => z.showOnGrid && z.timeZone !== displayTimeZone),
+    [pinnedTimeZones, displayTimeZone],
+  )
+  const showLeftRail = store.settings.showLeftRail ?? false
+  const [schedulingPanelOpen, setSchedulingPanelOpen] = useState(false)
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [shareMode, setShareMode] = useState(false)
+  const [proposedSlots, setProposedSlots] = useState<ProposedSlot[]>([])
+  const [sharePlaceHolds, setSharePlaceHolds] = useState(true)
+  const [shareExtraZones, setShareExtraZones] = useState<string[]>([])
+  const [shareHoldGroupId] = useState(() => `hold_${Date.now()}`)
+  const scheduling = useSchedulingLinks({ store, displayTimeZone: homeTimeZone, setStore, background })
+
+  const addPinnedTimeZone = useCallback((tz: string) => {
+    setStore(current => {
+      const existing = current.settings.pinnedTimeZones ?? []
+      if (existing.some(p => p.timeZone === tz)) return current
+      return {
+        ...current,
+        settings: {
+          ...current.settings,
+          pinnedTimeZones: [
+            ...existing,
+            { id: `tz_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, timeZone: tz, label: timeZoneDisplayLabel(tz), showOnGrid: true },
+          ],
+        },
+      }
+    })
+  }, [setStore])
+
+  const removePinnedTimeZone = useCallback((id: string) => {
+    setStore(current => ({
+      ...current,
+      settings: {
+        ...current.settings,
+        pinnedTimeZones: (current.settings.pinnedTimeZones ?? []).filter(p => p.id !== id),
+      },
+    }))
+  }, [setStore])
+
+  const togglePinnedOnGrid = useCallback((id: string) => {
+    setStore(current => ({
+      ...current,
+      settings: {
+        ...current.settings,
+        pinnedTimeZones: (current.settings.pinnedTimeZones ?? []).map(p =>
+          p.id === id ? { ...p, showOnGrid: !p.showOnGrid } : p,
+        ),
+      },
+    }))
+  }, [setStore])
+
+  const setPreviewTimeZone = useCallback((tz: string | null) => {
+    setStore(current => ({
+      ...current,
+      settings: {
+        ...current.settings,
+        previewTimeZone: tz && tz !== homeTimeZone ? tz : null,
+      },
+    }))
+  }, [homeTimeZone, setStore])
+
+  const toggleLeftRail = useCallback(() => {
+    setStore(current => ({
+      ...current,
+      settings: {
+        ...current.settings,
+        showLeftRail: !(current.settings.showLeftRail ?? false),
+      },
+    }))
+  }, [setStore])
+
+  const toggleTimeFormat = useCallback(() => {
+    setStore(current => ({
+      ...current,
+      settings: {
+        ...current.settings,
+        timeFormat: current.settings.timeFormat === '24h' ? '12h' : '24h',
+      },
+    }))
+  }, [setStore])
+
+  const addProposedSlotRange = useCallback(
+    (dayKey: string, startMinutes: number, endMinutes: number) => {
+      const rangeMin = normalizedRange(startMinutes, endMinutes)
+      const startIso = instantFromZonedWallTime(dayKey, Math.floor(rangeMin.startMinutes / 60), rangeMin.startMinutes % 60, displayTimeZone)
+      const endIso = instantFromZonedWallTime(dayKey, Math.floor(rangeMin.endMinutes / 60), rangeMin.endMinutes % 60, displayTimeZone)
+      let holdEventId: string | undefined
+      if (sharePlaceHolds) {
+        const calId = firstEditableCalendarId(store)
+        if (calId) {
+          const hold: CalendarEvent = {
+            ...createDraftEvent(calId, startIso, 'Hold · Proposed slot', displayTimeZone),
+            endsAt: endIso,
+            status: 'tentative',
+            busyStatus: 'tentative',
+            holdGroupId: shareHoldGroupId,
+          }
+          holdEventId = hold.id
+          setStore(current => ({ ...current, events: [...current.events, hold] }))
+        }
+      }
+      setProposedSlots(current => {
+        if (current.some(s => s.start === startIso && s.end === endIso)) return current
+        return [...current, { start: startIso, end: endIso, ...(holdEventId ? { holdEventId } : {}) }].sort((a, b) =>
+          a.start.localeCompare(b.start),
+        )
+      })
+    },
+    [displayTimeZone, sharePlaceHolds, shareHoldGroupId, store, setStore],
+  )
+
+  const removeProposedSlot = useCallback(
+    (startIso: string) => {
+      setProposedSlots(current => {
+        const target = current.find(s => s.start === startIso)
+        if (target?.holdEventId) {
+          setStore(s => ({ ...s, events: s.events.filter(e => e.id !== target.holdEventId) }))
+        }
+        return current.filter(s => s.start !== startIso)
+      })
+    },
+    [setStore],
+  )
+
+  const clearProposedSlots = useCallback(() => {
+    setProposedSlots(current => {
+      const holdIds = new Set(current.map(s => s.holdEventId).filter((x): x is string => Boolean(x)))
+      if (holdIds.size > 0) {
+        setStore(s => ({ ...s, events: s.events.filter(e => !holdIds.has(e.id)) }))
+      }
+      return []
+    })
+  }, [setStore])
+
+  const sendEventViaPureMail = useCallback(
+    async (event: CalendarEvent) => {
+      const zones = [
+        { label: timeZoneShortCode(displayTimeZone), timeZone: displayTimeZone },
+        ...pinnedTimeZones.map(p => ({ label: timeZoneShortCode(p.timeZone), timeZone: p.timeZone })),
+      ]
+      const summary = formatProposedSlotsText([{ start: event.startsAt, end: event.endsAt }], zones, {
+        title: event.title,
+        timeFormat,
+        referenceTimeZone: displayTimeZone,
+      })
+      const bodyLines = [
+        summary,
+        ...(event.location ? ['', `Location: ${event.location}`] : []),
+        ...(event.conferenceLink ? [`Join: ${event.conferenceLink}`] : []),
+        ...(event.description ? ['', event.description] : []),
+      ]
+      const ics = generateIcsEventExport({
+        uid: event.externalUid ?? `purecal-${event.id}@puredesktop`,
+        timestamp: new Date().toISOString(),
+        title: event.title,
+        description: event.description,
+        location: event.location,
+        startsAt: event.startsAt,
+        endsAt: event.endsAt,
+        allDay: event.allDay,
+        attendees: event.attendees,
+      })
+      await openPureMailCompose({
+        to: event.attendees.map(a => ({ email: a.email, name: a.name })),
+        subject: `Invite: ${event.title}`,
+        body: bodyLines.join('\n'),
+        attachments: [
+          {
+            id: `ics_${event.id}`,
+            name: `${event.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'event'}.ics`,
+            mimeType: 'text/calendar; method=REQUEST',
+            sizeLabel: `${Math.max(1, Math.round(ics.length / 1024))} KB`,
+            contentBase64: utf8ToBase64(ics),
+          },
+        ],
+      })
+    },
+    [displayTimeZone, pinnedTimeZones, timeFormat],
+  )
+
+  const rememberContacts = useCallback(
+    (contacts: Array<{ name: string; email?: string; timeZone: string }>) => {
+      setStore(current => {
+        const existing = current.settings.savedContacts ?? []
+        const next = [...existing]
+        let changed = false
+        for (const c of contacts) {
+          const idx = next.findIndex(
+            item =>
+              (c.email && item.email && item.email.toLowerCase() === c.email.toLowerCase()) ||
+              (!c.email && item.name.toLowerCase() === c.name.toLowerCase()),
+          )
+          if (idx >= 0) {
+            if (next[idx]!.timeZone !== c.timeZone || next[idx]!.name !== c.name) {
+              next[idx] = { ...next[idx]!, name: c.name, ...(c.email ? { email: c.email } : {}), timeZone: c.timeZone }
+              changed = true
+            }
+          } else {
+            next.push({
+              id: `contact_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              name: c.name,
+              ...(c.email ? { email: c.email } : {}),
+              timeZone: c.timeZone,
+            })
+            changed = true
+          }
+        }
+        return changed ? { ...current, settings: { ...current.settings, savedContacts: next.slice(-50) } } : current
+      })
+    },
+    [setStore],
+  )
+
   const compactDays = useMemo(
     () => (compact ? compactAgendaDays(anchorDate, displayTimeZone) : []),
     [anchorDate, compact, displayTimeZone],
   )
-  const range = compact
-    ? compactAgendaRange(compactDays)
-    : weekRange(anchorDate, displayTimeZone)
+  const threeDayDays = useMemo(() => {
+    const startKey = dateKeyInTimeZone(anchorDate, displayTimeZone)
+    return Array.from({ length: 3 }, (_, idx) => {
+      const key = addDaysToDateKey(startKey, idx)
+      return new Date(instantFromZonedWallTime(key, 12, 0, displayTimeZone))
+    })
+  }, [anchorDate, displayTimeZone])
+  const range = useMemo(() => {
+    if (compact) return compactAgendaRange(compactDays)
+    const wk = weekRange(anchorDate, displayTimeZone)
+    if (view !== 'threeDay') return wk
+    const first = startOfDayIso(threeDayDays[0] ?? anchorDate, displayTimeZone)
+    const last = endOfDayIso(threeDayDays[threeDayDays.length - 1] ?? anchorDate, displayTimeZone)
+    return {
+      start: first < wk.start ? first : wk.start,
+      end: last > wk.end ? last : wk.end,
+    }
+  }, [anchorDate, compact, compactDays, displayTimeZone, threeDayDays, view])
   const visibleEvents = useMemo(
     () => visibleCalendarEvents(store, range.start, range.end),
     [range.end, range.start, store],
@@ -2879,7 +3161,7 @@ export function PureCalendarShell({
   })
   const headerRange = compact
     ? compactAgendaTitle(compactDays, displayTimeZone)
-    : calendarRangeTitle(view, anchorDate, days, displayTimeZone)
+    : calendarRangeTitle(view, anchorDate, view === 'threeDay' ? threeDayDays : days, displayTimeZone)
   const searchResults = useMemo(
     () => searchCalendarStore(store, searchQuery),
     [searchQuery, store],
@@ -3418,6 +3700,8 @@ export function PureCalendarShell({
         next.setDate(next.getDate() + direction * 7)
       } else if (view === 'day') {
         next.setDate(next.getDate() + direction)
+      } else if (view === 'threeDay') {
+        next.setDate(next.getDate() + direction * 3)
       } else if (view === 'month') {
         // Normalize to the 1st first so month-length differences can't skip a
         // month (e.g. Jan 31 → Mar 3).
@@ -4481,7 +4765,11 @@ export function PureCalendarShell({
     event.preventDefault()
     const latestEnd =
       pointerMinutesForDay(dayKey, event.clientY) ?? gridDraft.endMinutes
-    createEventOnDayRange(dayKey, gridDraft.startMinutes, latestEnd)
+    if (shareMode) {
+      addProposedSlotRange(dayKey, gridDraft.startMinutes, latestEnd)
+    } else {
+      createEventOnDayRange(dayKey, gridDraft.startMinutes, latestEnd)
+    }
     setGridDraft(null)
   }
 
@@ -4893,11 +5181,12 @@ export function PureCalendarShell({
     if (compact && compactIgnoresCommand(command, detailsOpen)) return
 
     // Do not let background grid/navigation shortcuts fire behind an open modal/panel.
-    const modalOpen = detailsOpen || settingsOpen || meetingFinderOpen
+    const modalOpen = detailsOpen || settingsOpen || meetingFinderOpen || schedulingPanelOpen || commandPaletteOpen
     if (
       modalOpen &&
       command !== 'close-inspector' &&
       command !== 'undo-last-change' &&
+      command !== 'command-palette' &&
       !(command === 'delete-selected-event' && detailsOpen)
     ) {
       return
@@ -4937,9 +5226,15 @@ export function PureCalendarShell({
     if (command === 'next-range') shiftRange(1)
     if (command === 'undo-last-change') undoLastEventChange()
     if (command === 'view-day') changeView('day')
+    if (command === 'view-three-day') changeView('threeDay')
     if (command === 'view-week') changeView('week')
     if (command === 'view-month') changeView('month')
     if (command === 'view-agenda') changeView('agenda')
+    if (command === 'share-availability') setShareMode(v => !v)
+    if (command === 'find-time') setMeetingFinderOpen(v => !v)
+    if (command === 'booking-links') setSchedulingPanelOpen(v => !v)
+    if (command === 'toggle-left-rail') toggleLeftRail()
+    if (command === 'command-palette') setCommandPaletteOpen(v => !v)
   }
 
   useEffect(() => {
@@ -5221,7 +5516,8 @@ export function PureCalendarShell({
       (_, index) => DAY_START_HOUR + index,
     )
     const timelineHeight = hours.length * HOUR_HEIGHT
-    const displayDays = view === 'day' ? [anchorDate] : days
+    const displayDays =
+      view === 'day' ? [anchorDate] : view === 'threeDay' ? threeDayDays : days
     const allDayEvents = allDayEventsInRange(
       visibleEvents,
       range.start,
@@ -5230,28 +5526,39 @@ export function PureCalendarShell({
     const nowHour = decimalHourInTimeZone(now.toISOString(), displayTimeZone)
     const nowTop = nowHour * HOUR_HEIGHT
     const showNowMarker = nowHour >= DAY_START_HOUR && nowHour <= DAY_END_HOUR
+    const firstDayKey = dateKeyInTimeZone(displayDays[0] ?? anchorDate, displayTimeZone)
+    const gutterWidth = gridSecondaryZones.length > 0 ? totalTimeRailWidth(gridSecondaryZones.length) : undefined
 
     return (
-      <TimeGrid $days={displayDays.length} $timelineHeight={timelineHeight}>
-        <TimeHeaderSpacer
-          title={
-            secondaryTimeZone
-              ? `Primary: ${displayTimeZone} · Secondary: ${secondaryTimeZone}`
-              : undefined
-          }
-        >
-          {secondaryTimeZone ? (
-            <span
-              style={{
-                fontSize: 10,
-                color: 'var(--platform-colors-text-secondary)',
-                padding: '0 4px',
-              }}
-            >
-              {secondaryTimeZone.split('/').pop()?.replace(/_/g, ' ')}
-            </span>
-          ) : null}
-        </TimeHeaderSpacer>
+      <TimeGrid $days={displayDays.length} $timelineHeight={timelineHeight} $gutterWidth={gutterWidth}>
+        {gridSecondaryZones.length > 0 ? (
+          <MultiZoneHeaderSpacer
+            primaryTimeZone={displayTimeZone}
+            secondaryZones={gridSecondaryZones}
+            anchorDate={displayDays[0] ?? anchorDate}
+            onSelectPreviewZone={tz => setPreviewTimeZone(tz)}
+          />
+        ) : (
+          <TimeHeaderSpacer
+            title={
+              secondaryTimeZone
+                ? `Primary: ${displayTimeZone} · Secondary: ${secondaryTimeZone}`
+                : undefined
+            }
+          >
+            {secondaryTimeZone ? (
+              <span
+                style={{
+                  fontSize: 10,
+                  color: 'var(--platform-colors-text-secondary)',
+                  padding: '0 4px',
+                }}
+              >
+                {secondaryTimeZone.split('/').pop()?.replace(/_/g, ' ')}
+              </span>
+            ) : null}
+          </TimeHeaderSpacer>
+        )}
         {displayDays.map(day => {
           const dayKey = dateKeyInTimeZone(day, displayTimeZone)
           const isToday = sameDate(day, now, displayTimeZone)
@@ -5305,38 +5612,50 @@ export function PureCalendarShell({
             </AllDayCell>
           )
         })}
-        <TimeRail>
-          {hours.map(hour => {
-            const secondaryLabel = secondaryTimeZone
-              ? formatTimeInTimeZone(
-                  instantFromZonedWallTime(
-                    dateKeyInTimeZone(displayDays[0] ?? anchorDate, displayTimeZone),
-                    hour,
-                    0,
-                    displayTimeZone,
-                  ),
-                  secondaryTimeZone,
-                )
-              : null
-            return (
-              <TimeLabel key={hour} $top={hour * HOUR_HEIGHT}>
-                {compactHourLabel(hour)}
-                {secondaryLabel ? (
-                  <span
-                    style={{
-                      display: 'block',
-                      fontSize: 9,
-                      opacity: 0.72,
-                      lineHeight: 1.1,
-                    }}
-                  >
-                    {secondaryLabel}
-                  </span>
-                ) : null}
-              </TimeLabel>
-            )
-          })}
-        </TimeRail>
+        {gridSecondaryZones.length > 0 ? (
+          <MultiZoneTimeRail
+            dayKey={firstDayKey}
+            hours={hours}
+            hourHeight={HOUR_HEIGHT}
+            primaryTimeZone={displayTimeZone}
+            secondaryZones={gridSecondaryZones}
+            timeFormat={timeFormat}
+            formatPrimaryHour={hour => (timeFormat === '24h' ? `${String(hour).padStart(2, '0')}:00` : compactHourLabel(hour))}
+          />
+        ) : (
+          <TimeRail>
+            {hours.map(hour => {
+              const secondaryLabel = secondaryTimeZone
+                ? formatTimeInTimeZone(
+                    instantFromZonedWallTime(
+                      dateKeyInTimeZone(displayDays[0] ?? anchorDate, displayTimeZone),
+                      hour,
+                      0,
+                      displayTimeZone,
+                    ),
+                    secondaryTimeZone,
+                  )
+                : null
+              return (
+                <TimeLabel key={hour} $top={hour * HOUR_HEIGHT}>
+                  {timeFormat === '24h' ? (hour === 0 ? '' : `${String(hour).padStart(2, '0')}:00`) : compactHourLabel(hour)}
+                  {secondaryLabel ? (
+                    <span
+                      style={{
+                        display: 'block',
+                        fontSize: 9,
+                        opacity: 0.72,
+                        lineHeight: 1.1,
+                      }}
+                    >
+                      {secondaryLabel}
+                    </span>
+                  ) : null}
+                </TimeLabel>
+              )
+            })}
+          </TimeRail>
+        )}
         {displayDays.map(day => {
           const key = dateKeyInTimeZone(day, displayTimeZone)
           const dayStartMs = Date.parse(startOfDayIso(day, displayTimeZone))
@@ -5393,9 +5712,33 @@ export function PureCalendarShell({
                       gridDraft.endMinutes,
                     )}
                   >
-                    New event
+                    {shareMode ? 'Propose slot' : 'New event'}
                   </TimedDraftBlock>
                 )}
+                {proposedSlots
+                  .filter(slot => dateKeyInTimeZone(slot.start, displayTimeZone) === key)
+                  .map(slot => {
+                    const startMin = minutesFromIso(slot.start, displayTimeZone)
+                    const endMin = Math.max(startMin + MIN_EVENT_MINUTES, minutesFromIso(slot.end, displayTimeZone))
+                    return (
+                      <ProposedSlotBlock
+                        key={`proposed-${slot.start}`}
+                        type="button"
+                        data-calendar-event
+                        style={styleForMinuteRange(startMin, endMin)}
+                        title="Proposed availability slot — click to remove"
+                        onClick={click => {
+                          click.stopPropagation()
+                          removeProposedSlot(slot.start)
+                        }}
+                      >
+                        <strong>Proposed slot</strong>
+                        <span>
+                          {formatTime(slot.start, displayTimeZone)} – {formatTime(slot.end, displayTimeZone)}
+                        </span>
+                      </ProposedSlotBlock>
+                    )
+                  })}
                 {layoutTimedItems(
                   visibleEvents.filter(event => {
                     if (event.allDay) return false
@@ -5519,6 +5862,35 @@ export function PureCalendarShell({
 
   return (
     <Root data-app="calendar" {...(compact ? { 'data-compact-in-room': '' } : {})}>
+      {!compact && showLeftRail && (
+        <DeskLeftRail
+          anchorDate={anchorDate}
+          now={now}
+          homeTimeZone={homeTimeZone}
+          activeTimeZone={displayTimeZone}
+          previewTimeZone={previewTimeZone}
+          timeFormat={timeFormat}
+          pinnedTimeZones={pinnedTimeZones}
+          calendars={store.calendars}
+          events={store.events}
+          schedulingLinks={scheduling.links}
+          cloudConnected={scheduling.status.connected}
+          onSelectDate={date => setAnchorDate(date)}
+          onToggleCalendar={calendarId =>
+            setStore(current => {
+              const target = current.calendars.find(c => c.id === calendarId)
+              return target ? setCalendarVisibility(current, calendarId, !target.visible) : current
+            })
+          }
+          onOpenCalendarsManager={() => setCalendarPanelOpen(true)}
+          onAddPinnedTimeZone={addPinnedTimeZone}
+          onRemovePinnedTimeZone={removePinnedTimeZone}
+          onTogglePinnedOnGrid={togglePinnedOnGrid}
+          onPreviewTimeZone={setPreviewTimeZone}
+          onOpenSchedulingStudio={() => setSchedulingPanelOpen(true)}
+          onCopyLink={url => void navigator.clipboard?.writeText(url).catch(() => undefined)}
+        />
+      )}
       <Main>
         <Header style={compact ? { alignItems: 'center', flexWrap: 'wrap' } : undefined}>
           <div>
@@ -5562,9 +5934,31 @@ export function PureCalendarShell({
               title="Type a time and title, press Enter to create a draft event"
             />
             {!compact && (
-              <Button size="sm" variant="subtle" onClick={() => setMeetingFinderOpen(open => !open)}>
-                Find a time
-              </Button>
+              <>
+                <Button
+                  size="sm"
+                  variant={shareMode ? 'primary' : 'subtle'}
+                  onClick={() => setShareMode(v => !v)}
+                  title="Drag slots on the grid to propose times, create a one-off link, or email via PureMail (S)"
+                >
+                  {shareMode ? 'Sharing times…' : 'Share times'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant={meetingFinderOpen ? 'primary' : 'subtle'}
+                  onClick={() => setMeetingFinderOpen(open => !open)}
+                >
+                  Find a time
+                </Button>
+                <Button
+                  size="sm"
+                  variant={schedulingPanelOpen ? 'primary' : 'subtle'}
+                  onClick={() => setSchedulingPanelOpen(open => !open)}
+                  title="Manage PureCloud booking pages, one-off invite links, and group polls (L)"
+                >
+                  Booking links
+                </Button>
+              </>
             )}
             <Button size="sm" variant="primary" onClick={createEvent}>
               New event
@@ -5573,6 +5967,14 @@ export function PureCalendarShell({
         </Header>
         <Toolbar style={hideInCompact}>
           <ToolbarGroup>
+            <Button
+              size="sm"
+              variant={showLeftRail ? 'primary' : 'subtle'}
+              onClick={toggleLeftRail}
+              title="Toggle navigator rail with mini-month, world clocks, calendars, and links ([)"
+            >
+              Navigator
+            </Button>
             <Button
               size="sm"
               variant="subtle"
@@ -5625,6 +6027,7 @@ export function PureCalendarShell({
               onValueChange={changeView}
               options={[
                 { value: 'day', label: 'Day' },
+                { value: 'threeDay', label: '3-Day' },
                 { value: 'week', label: 'Week' },
                 { value: 'month', label: 'Month' },
                 { value: 'agenda', label: 'Agenda' },
@@ -5633,6 +6036,14 @@ export function PureCalendarShell({
             />
           </ToolbarGroup>
           <ToolbarGroup>
+            <Button
+              size="sm"
+              variant="subtle"
+              onClick={() => setCommandPaletteOpen(true)}
+              title="Open command palette (⌘K / Ctrl+K)"
+            >
+              ⌘K
+            </Button>
             <SearchBox ref={searchBoxRef}>
               <SearchInput
                 ref={searchInputRef}
@@ -5686,6 +6097,43 @@ export function PureCalendarShell({
             </SearchBox>
           </ToolbarGroup>
         </Toolbar>
+        {!compact && previewTimeZone && (
+          <TravelBanner role="status">
+            <span>
+              Viewing calendar in <strong>{timeZoneDisplayLabel(previewTimeZone)}</strong> ({previewTimeZone}) — Home is {timeZoneDisplayLabel(homeTimeZone)}.
+            </span>
+            <Button size="sm" variant="primary" onClick={() => setPreviewTimeZone(null)}>
+              Return to {timeZoneShortCode(homeTimeZone)}
+            </Button>
+          </TravelBanner>
+        )}
+        {!compact && shareMode && (
+          <ShareAvailabilityBar
+            slots={proposedSlots}
+            primaryTimeZone={displayTimeZone}
+            extraTimeZones={shareExtraZones.length > 0 ? shareExtraZones : pinnedTimeZones.map(z => z.timeZone)}
+            timeFormat={timeFormat}
+            placeHolds={sharePlaceHolds}
+            cloudConnected={scheduling.status.connected}
+            onTogglePlaceHolds={setSharePlaceHolds}
+            onAddExtraTimeZone={tz => setShareExtraZones(prev => (prev.includes(tz) ? prev : [...prev, tz]))}
+            onRemoveExtraTimeZone={tz => setShareExtraZones(prev => prev.filter(x => x !== tz))}
+            onRemoveSlot={removeProposedSlot}
+            onClearSlots={clearProposedSlots}
+            onCreateLink={async (kind, linkTitle) => {
+              const link = await scheduling.createLink({
+                kind,
+                title: linkTitle,
+                candidateSlots: proposedSlots.map(s => ({ start: s.start, end: s.end })),
+              })
+              return link.url
+            }}
+            onSendViaPureMail={async (linkTitle, body) => {
+              await openPureMailCompose({ subject: `Proposed times: ${linkTitle}`, body })
+            }}
+            onClose={() => setShareMode(false)}
+          />
+        )}
         {persistFailure && (
           <Section aria-live="assertive">
             <Kicker>Changes are not being saved</Kicker>
@@ -5920,6 +6368,10 @@ export function PureCalendarShell({
           busyReader={meetingBusyReader}
           teammates={team.meta ? team.meta.people.filter(person => person.id !== team.meta!.me.id) : []}
           ownerTimeZone={displayTimeZone}
+          pinnedTimeZones={pinnedTimeZones}
+          savedContacts={store.settings.savedContacts ?? []}
+          timeFormat={timeFormat}
+          cloudConnected={scheduling.status.connected}
           saveDraft={saveMeetingDraft}
           onOpenDraft={eventId => {
             const draft = latestStoreRef.current.events.find(item => item.id === eventId)
@@ -5928,9 +6380,89 @@ export function PureCalendarShell({
             setSelectedTaskId(null)
             setDetailsOpen(true)
           }}
+          onCreateLinkFromSlots={async (kind, linkTitle, slots: CandidateSlot[]) => {
+            const link = await scheduling.createLink({ kind, title: linkTitle, candidateSlots: slots })
+            return link.url
+          }}
+          onSendViaPureMail={async input => {
+            await openPureMailCompose(input)
+          }}
+          onRememberContacts={rememberContacts}
           onClose={() => setMeetingFinderOpen(false)}
         />
       )}
+
+      {!compact && schedulingPanelOpen && (
+        <SchedulingLinksPanel
+          store={store}
+          displayTimeZone={displayTimeZone}
+          timeFormat={timeFormat}
+          cloudConnected={scheduling.status.connected}
+          cloudOrgName={scheduling.status.organisation}
+          cloudPublicUrl={scheduling.status.publicUrl}
+          links={scheduling.links}
+          bookings={scheduling.bookings}
+          pollVotes={scheduling.pollVotes}
+          busySyncLabel={scheduling.busySyncLabel}
+          onClose={() => setSchedulingPanelOpen(false)}
+          onRefresh={scheduling.refresh}
+          onCreateBookingLink={async input => {
+            await scheduling.createLink({ kind: 'booking', ...input })
+          }}
+          onToggleLinkActive={scheduling.toggleLinkActive}
+          onDeleteLink={scheduling.deleteLink}
+          onConfirmBooking={scheduling.confirmBooking}
+          onCancelBooking={scheduling.cancelBooking}
+          onFinalizePoll={async (linkId, startsAt, endsAt) => {
+            const res = await scheduling.finalizePoll(linkId, startsAt, endsAt)
+            const calId = firstEditableCalendarId(store)
+            if (calId) {
+              const ev: CalendarEvent = {
+                ...createDraftEvent(calId, res.booking.startsAt, res.booking.linkTitle, displayTimeZone),
+                endsAt: res.booking.endsAt,
+                attendees: res.participants.map(p => ({ name: p.name, email: p.email, response: 'accepted' as const })),
+              }
+              setStore(current => ({ ...current, events: [...current.events, ev] }))
+            }
+          }}
+          onSendLinkViaPureMail={async link => {
+            await openPureMailCompose({
+              subject: `Book a time: ${link.title}`,
+              body: `You can pick a time that works in your timezone here:\n${link.url}\n`,
+            })
+          }}
+          onEmailGuestViaPureMail={async booking => {
+            await openPureMailCompose({
+              to: [{ email: booking.guestEmail, name: booking.guestName }],
+              subject: `Re: ${booking.linkTitle}`,
+              body: `Hi ${booking.guestName},\n\nLooking forward to our upcoming meeting.\n`,
+            })
+          }}
+          onOpenExternalUrl={url => void openExternalUrl(url)}
+          onStartShareAvailability={() => {
+            setSchedulingPanelOpen(false)
+            setShareMode(true)
+          }}
+        />
+      )}
+
+      <CommandPalette
+        open={!compact && commandPaletteOpen}
+        links={scheduling.links}
+        timeFormat={timeFormat}
+        onClose={() => setCommandPaletteOpen(false)}
+        onChangeView={changeView}
+        onGoToday={() => setAnchorDate(new Date())}
+        onNewEvent={createEvent}
+        onToggleShareAvailability={() => setShareMode(v => !v)}
+        onOpenTimeFinder={() => setMeetingFinderOpen(true)}
+        onOpenSchedulingStudio={() => setSchedulingPanelOpen(true)}
+        onToggleLeftRail={toggleLeftRail}
+        onToggleTimeFormat={toggleTimeFormat}
+        onPreviewTimeZone={setPreviewTimeZone}
+        onPinTimeZone={addPinnedTimeZone}
+        onCopyLink={url => void navigator.clipboard?.writeText(url).catch(() => undefined)}
+      />
 
       {calendarPanelOpen && (
         <CalendarDrawer style={hideInCompact}>
@@ -7974,6 +8506,29 @@ export function PureCalendarShell({
                         )}
                       </>
                     )}
+                    <EventTimeZoneStrip
+                      event={selectedEvent}
+                      displayTimeZone={displayTimeZone}
+                      pinnedTimeZones={pinnedTimeZones}
+                      savedContacts={store.settings.savedContacts ?? []}
+                      timeFormat={timeFormat}
+                      conflictingEvents={visibleEvents.filter(
+                        other =>
+                          other.id !== selectedEvent.id &&
+                          other.status !== 'cancelled' &&
+                          other.busyStatus !== 'free' &&
+                          !other.allDay &&
+                          Date.parse(other.startsAt) < Date.parse(selectedEvent.endsAt) &&
+                          Date.parse(other.endsAt) > Date.parse(selectedEvent.startsAt),
+                      )}
+                      canEdit={!selectedEventReadOnly}
+                      onSetDurationMinutes={minutes => {
+                        const startMs = Date.parse(selectedEvent.startsAt)
+                        if (!Number.isFinite(startMs)) return
+                        updateSelectedEvent({ endsAt: new Date(startMs + minutes * 60_000).toISOString() })
+                      }}
+                      onSendViaPureMail={() => void sendEventViaPureMail(selectedEvent)}
+                    />
                     <DetailsActionRow>
                       {!selectedEventReadOnly && (
                         <Button
