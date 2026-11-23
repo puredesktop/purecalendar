@@ -191,15 +191,21 @@ The app renders day, week, month, and agenda views.
 Tasks with scheduled times appear inline alongside events when their owning
 calendar is visible.
 
+## App Functions & 3-Tier Tool Surface
+
+PureCalendar exposes its operations in three tiers built on the shared Pure* App Functions primitive:
+
+1. **Composite App Functions (`fn_*`, always exposed — prefer these first):**
+   - `fn_scheduleBriefing` (read): returns resolved calendar settings, daily agenda in local time, overlapping conflicts, open working-hour free blocks, drafts/holds, visible scheduled tasks, sync health, and optional keyword search in one call.
+   - `fn_planMeetingSlots` (read): re-reads visible calendars and teammate team-calendar busy intervals, resolves omitted participant time zones from saved contacts when available (never guessing), and returns up to three ranked options with local times, benefits, trade-offs, availability caveats, copyable `proposalText`, and owner settings in one call.
+   - `fn_auditScheduleHealth` (read): audits a date window for double-bookings, back-to-back meeting marathons without buffers, stale/pending drafts, grouped tentative holds, outside-working-hours events, and sync errors.
+   - `fn_stageMeetingDrafts` (write, draft-only): stages 1–5 conflict-checked tentative draft holds linked by `holdGroupId`, confirms a chosen meeting option via live recheck (idempotent), and/or releases unused private draft holds. Never activates events or deletes active events.
+2. **Core & release-gated atomic tools (always exposed):** `listCalendarEvents`, `createCalendarDraft`, `updateCalendarEvent`, `rescheduleCalendarEvent`, `deleteCalendarEvent`, and `activateCalendarEvent` (release).
+3. **Extended specialist atomic tools (on-demand via `discoverAppTools` + `callExtendedReadTool` / `callExtendedTool`):** `searchCalendar`, `getCalendarSettings`, `findMeetingTimes`, and `createMeetingDraft` remain 100% available when an edge case requires calling them directly.
+
 ## Read-First Workflow
 
-Always read before you write. Use `getCalendarSettings` early — it returns
-the user's resolved time zone, working hours (work start and end, available
-days), default calendar, and the calendar list with read-only status; base
-slot-picking on those values. Use `listCalendarEvents` to inspect a date
-range and get exact event ids before proposing changes; widen the range
-rather than calling repeatedly for adjacent days. Use `searchCalendar` to
-find events by keyword across title, description, and location. Resolve
+Always read before you write. Prefer `fn_scheduleBriefing` for day/week overviews (it returns settings, events, conflicts, open blocks, drafts, and optional keyword search in one call) or `fn_auditScheduleHealth` for schedule hygiene checks. Use `listCalendarEvents` directly when you only need a raw event list in a range, and reach `getCalendarSettings` or `searchCalendar` via `callExtendedReadTool` if needed individually. Resolve
 "today"/"tomorrow"/weekday names against the real current date, never
 against training data. Before drafting, check the target slot against the
 events you already fetched; if it conflicts, place the new draft in the
@@ -262,8 +268,10 @@ error names the last date; search up to it).
 
 | Task | Tool |
 |---|---|
-| "When could I meet Ana (New York) for an hour next week?" | `getCalendarSettings`, then `findMeetingTimes` |
-| "Take option 2" | `createMeetingDraft` with option 2's `startsAt` |
+| "What does next week look like?" | `fn_scheduleBriefing` |
+| "Any double-bookings or stale holds?" | `fn_auditScheduleHealth` |
+| "When could I meet Ana (New York) for an hour next week?" | `fn_planMeetingSlots` (or extended `findMeetingTimes`) |
+| "Hold options 1 and 2" / "Take option 2 and clear the other holds" | `fn_stageMeetingDrafts` (or extended `createMeetingDraft`) |
 | "Send it" | Not yours: the user presses Make active under the draft's Stage |
 
 ## Editing Events
