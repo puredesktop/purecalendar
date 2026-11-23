@@ -54,6 +54,30 @@ type StoreDispatch = (
   updater: CalendarStore | ((prev: CalendarStore) => CalendarStore),
 ) => void
 
+export class AgentCalendarToolError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'AgentCalendarToolError'
+  }
+}
+
+export interface CalendarAgentToolContext {
+  getStore: () => CalendarStore
+  commitEvents: (
+    store: CalendarStore,
+    change: (events: CalendarStore['events']) => CalendarStore['events'],
+  ) => void
+  commitStore: (
+    store: CalendarStore,
+    change: (store: CalendarStore) => CalendarStore,
+  ) => void
+  recordOperation: (kind: string, summary: string) => void
+  readOwnerNow: () => Promise<OwnerCalendarRead>
+  getBusyReader: () => TeamBusyReader | null
+  searchQualification: Map<string, ParticipantAvailability[]>
+  now?: () => Date
+}
+
 let agentStoreRef: MutableRefObject<CalendarStore | null> | null = null
 let agentStoreDispatch: StoreDispatch | null = null
 
@@ -133,7 +157,7 @@ function requireStore(): CalendarStore {
  * strings). Returns undefined when the argument is absent so callers can
  * distinguish "not provided" from "provided empty".
  */
-function readAttendeesArg(
+export function readAttendeesArg(
   args: Record<string, unknown>,
 ): EventAttendee[] | undefined {
   const raw = args.attendees
@@ -901,6 +925,18 @@ const createMeetingDraft: AgentToolHandler = async invoke => {
     }
   } catch (error) {
     return agentToolErrorContent(error instanceof Error ? error.message : String(error))
+  }
+}
+
+export function getDefaultCalendarToolContext(): CalendarAgentToolContext {
+  return {
+    getStore: requireStore,
+    commitEvents,
+    commitStore,
+    recordOperation: recordAgentOperation,
+    readOwnerNow,
+    getBusyReader: busyReader,
+    searchQualification,
   }
 }
 
