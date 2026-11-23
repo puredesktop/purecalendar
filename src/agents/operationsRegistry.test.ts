@@ -597,6 +597,56 @@ describe('fn_scheduleBriefing', () => {
     expect(ops).toHaveLength(0) // read-only
   })
 
+  it('handles bare-date all-day events accurately in negative-UTC time zones', async () => {
+    const store = makeStore(
+      [
+        makeEvent({
+          id: 'evt-offsite',
+          title: 'Team Offsite',
+          startsAt: '2030-01-07',
+          endsAt: '2030-01-08',
+          allDay: true,
+          timeZone: 'UTC',
+          busyStatus: 'busy',
+        }),
+      ],
+      {
+        settings: {
+          timeZoneMode: 'fixed',
+          timeZone: 'America/Los_Angeles',
+          availableDays: [1, 2, 3, 4, 5],
+          availableStartHour: 9,
+          availableEndHour: 17,
+        },
+      },
+    )
+    const { handlers } = createHarness(store)
+    const res = await handlers.fn_scheduleBriefing!(
+      invoke('fn_scheduleBriefing', { from: '2030-01-07', to: '2030-01-08' }),
+    )
+    const envelope = JSON.parse(res.content) as {
+      data: {
+        days: Array<{
+          date: string
+          events: Array<{ id: string; localDate: string; localStart: string }>
+          freeBlocks: unknown[]
+          busyMinutesInWorkHours: number
+        }>
+      }
+    }
+    expect(envelope.data.days[0]?.date).toBe('2030-01-07')
+    expect(envelope.data.days[0]?.events).toEqual([
+      expect.objectContaining({
+        id: 'evt-offsite',
+        localDate: '2030-01-07',
+        localStart: 'all-day',
+      }),
+    ])
+    expect(envelope.data.days[0]?.freeBlocks).toEqual([])
+    expect(envelope.data.days[0]?.busyMinutesInWorkHours).toBe(480)
+    expect(envelope.data.days[1]?.events).toEqual([])
+  })
+
   it('rejects unknown calendarId or inverted date ranges', async () => {
     const { handlers } = createHarness(makeStore())
 
@@ -770,6 +820,27 @@ describe('fn_auditScheduleHealth', () => {
     expect(envelope.data.syncIssues.failedCalendarIds).toEqual(['cal_holidays'])
     expect(envelope.data.recommendations.length).toBeGreaterThanOrEqual(4)
   })
+
+  it('flags events ending exactly at local midnight as outside working hours', async () => {
+    const store = makeStore([
+      makeEvent({
+        id: 'evt-midnight',
+        title: 'Late Night Release Window',
+        startsAt: '2030-01-07T23:00:00.000Z',
+        endsAt: '2030-01-08T00:00:00.000Z',
+      }),
+    ])
+    const { handlers } = createHarness(store)
+    const res = await handlers.fn_auditScheduleHealth!(
+      invoke('fn_auditScheduleHealth', { from: '2030-01-07', to: '2030-01-08' }),
+    )
+    const envelope = JSON.parse(res.content) as {
+      data: { outsideWorkingHours: Array<{ id: string }> }
+    }
+    expect(envelope.data.outsideWorkingHours.map(e => e.id)).toEqual([
+      'evt-midnight',
+    ])
+  })
 })
 
 describe('fn_stageMeetingDrafts', () => {
@@ -903,6 +974,61 @@ describe('fn_stageMeetingDrafts', () => {
     expect(remainingIds).toContain(staged.data.confirmedDraft.id)
     expect(remainingIds).not.toContain('evt-hold-1')
     expect(remainingIds).not.toContain('evt-hold-2')
+  })
+
+  it('confirms a previously held slot while releasing its hold group and resolving saved-contact time zones', async () => {
+    const hold1 = makeEvent({
+      id: 'evt-opt-1',
+      title: 'HOLD: Design Review (option 1)',
+      startsAt: '2030-01-07T14:00:00.000Z',
+      endsAt: '2030-01-07T14:30:00.000Z',
+      lifecycle: 'draft',
+      holdGroupId: 'grp-design',
+    })
+    const hold2 = makeEvent({
+      id: 'evt-opt-2',
+      title: 'HOLD: Design Review (option 2)',
+      startsAt: '2030-01-08T10:00:00.000Z',
+      endsAt: '2030-01-08T10:30:00.000Z',
+      lifecycle: 'draft',
+      holdGroupId: 'grp-design',
+    })
+    const { handlers, getStore } = createHarness(makeStore([hold1, hold2]))
+
+    const staged = JSON.parse(
+      (
+        await handlers.fn_stageMeetingDrafts!(
+          invoke('fn_stageMeetingDrafts', {
+            confirmMeetingDraft: {
+              title: 'Design Review',
+              durationMinutes: 30,
+              from: '2030-01-07',
+              to: '2030-01-09',
+              startsAt: '2030-01-08T10:00:00.000Z',
+              // Omitted timeZone resolved from savedContacts (Ana Silva -> Europe/Berlin)
+              participants: [{ name: 'Ana Silva', email: 'ana@example.com' }],
+            },
+            releaseHoldGroupId: 'grp-design',
+          }),
+        )
+      ).content,
+    ) as {
+      data: {
+        confirmedDraft: { id: string; created: boolean; startsAt: string; attendeesListed: string[] }
+        releasedHolds: Array<{ id: string }>
+        refusedReleases: Array<{ id: string }>
+      }
+    }
+
+    expect(staged.data.confirmedDraft.created).toBe(true)
+    expect(staged.data.confirmedDraft.startsAt).toBe('2030-01-08T10:00:00.000Z')
+    expect(staged.data.confirmedDraft.attendeesListed).toEqual(['ana@example.com'])
+    expect(staged.data.releasedHolds.map(h => h.id).sort()).toEqual([
+      'evt-opt-1',
+      'evt-opt-2',
+    ])
+    expect(staged.data.refusedReleases).toEqual([])
+    expect(getStore().events.map(e => e.id)).toEqual([staged.data.confirmedDraft.id])
   })
 
   it('rejects empty call with no holds, confirmMeetingDraft, or release target', async () => {

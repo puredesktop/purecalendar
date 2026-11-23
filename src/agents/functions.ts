@@ -4,6 +4,7 @@ import {
 } from '@purescience/platform-ui/bridge/appFunctions'
 import {
   allDayEventPatch,
+  allDayInclusiveEndDateKey,
   calendarSyncSummary,
   canEditCalendarEvent,
   createDraftEvent,
@@ -283,6 +284,10 @@ function computeDayFreeBlocks(
   const busyIntervals: Array<[number, number]> = []
   for (const ev of events) {
     if (!isBusyEvent(ev)) continue
+    if (ev.allDay) {
+      busyIntervals.push([dayWorkStartMs, dayWorkEndMs])
+      continue
+    }
     const startMs = parseEventBoundMs(ev.startsAt, ev.timeZone || timeZone)
     const endMs = parseEventBoundMs(ev.endsAt, ev.timeZone || timeZone)
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
@@ -353,15 +358,40 @@ function computeDayFreeBlocks(
 }
 
 function summarizeEventForBriefing(event: CalendarEvent, timeZone: string) {
-  const lt = localTimes(event.startsAt, event.endsAt, timeZone)
+  let localDate: string
+  let localStart: string
+  let localEnd: string
+  if (event.allDay) {
+    const evZone = isValidTimeZone(event.timeZone) ? event.timeZone : timeZone
+    localDate = dateKeyInTimeZone(event.startsAt, evZone)
+    localStart = 'all-day'
+    localEnd = 'all-day'
+  } else {
+    const startMs = parseEventBoundMs(event.startsAt, event.timeZone || timeZone)
+    const endMs = parseEventBoundMs(event.endsAt, event.timeZone || timeZone)
+    if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
+      const lt = localTimes(
+        new Date(startMs).toISOString(),
+        new Date(endMs).toISOString(),
+        timeZone,
+      )
+      localDate = lt.date
+      localStart = lt.start
+      localEnd = lt.end
+    } else {
+      localDate = dateKeyInTimeZone(event.startsAt, timeZone)
+      localStart = event.startsAt
+      localEnd = event.endsAt
+    }
+  }
   return {
     id: event.id,
     title: event.title,
     startsAt: event.startsAt,
     endsAt: event.endsAt,
-    localDate: lt.date,
-    localStart: event.allDay ? 'all-day' : lt.start,
-    localEnd: event.allDay ? 'all-day' : lt.end,
+    localDate,
+    localStart,
+    localEnd,
     allDay: event.allDay,
     calendarId: event.calendarId,
     status: event.status,
@@ -436,6 +466,66 @@ function findSavedContactTimeZone(
     }
   }
   return null
+}
+
+function resolveMeetingParticipants(
+  rawParticipants: unknown[],
+  store: CalendarStore,
+): {
+  participants: MeetingParticipantInput[]
+  sources: Array<{
+    label: string
+    timeZone: string
+    timeZoneSource: 'provided' | 'savedContact'
+  }>
+} {
+  const participants: MeetingParticipantInput[] = []
+  const sources: Array<{
+    label: string
+    timeZone: string
+    timeZoneSource: 'provided' | 'savedContact'
+  }> = []
+
+  for (let i = 0; i < rawParticipants.length; i++) {
+    const item = rawParticipants[i]
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new AgentCalendarToolError(
+        `Participant #${i + 1} must be an object with at least a timeZone (or match a saved contact).`,
+      )
+    }
+    const rec = item as Record<string, unknown>
+    const name = trimmedString(rec.name) || undefined
+    const email = trimmedString(rec.email) || undefined
+    const explicitZone = trimmedString(rec.timeZone)
+    if (explicitZone) {
+      participants.push({ name, email, timeZone: explicitZone })
+      sources.push({
+        label: name || email || `Participant ${i + 1}`,
+        timeZone: explicitZone,
+        timeZoneSource: 'provided',
+      })
+      continue
+    }
+    const saved = findSavedContactTimeZone(store, email, name)
+    if (saved) {
+      participants.push({
+        name: name || saved.matchedName,
+        email,
+        timeZone: saved.timeZone,
+      })
+      sources.push({
+        label: name || saved.matchedName || email || `Participant ${i + 1}`,
+        timeZone: saved.timeZone,
+        timeZoneSource: 'savedContact',
+      })
+      continue
+    }
+    throw new AgentCalendarToolError(
+      `Participant "${name || email || `#${i + 1}`}" has no timeZone and was not found in saved contacts. Ask for their IANA time zone (e.g. Europe/Berlin) rather than guessing.`,
+    )
+  }
+
+  return { participants, sources }
 }
 
 /**
@@ -531,11 +621,19 @@ export const PURECALENDAR_FUNCTIONS: readonly AppFunctionDefinition<CalendarAgen
         const byDate = new Map<string, CalendarEvent[]>()
         for (const key of dateKeys) byDate.set(key, [])
         for (const ev of events) {
-          const evStartKey = dateKeyInTimeZone(ev.startsAt, timeZone)
-          const evEndMs = parseEventBoundMs(ev.endsAt, ev.timeZone || timeZone)
-          const evLastKey = Number.isFinite(evEndMs)
-            ? dateKeyInTimeZone(new Date(Math.max(0, evEndMs - 1)), timeZone)
-            : evStartKey
+          let evStartKey: string
+          let evLastKey: string
+          if (ev.allDay) {
+            const evZone = isValidTimeZone(ev.timeZone) ? ev.timeZone : timeZone
+            evStartKey = dateKeyInTimeZone(ev.startsAt, evZone)
+            evLastKey = allDayInclusiveEndDateKey(ev, timeZone)
+          } else {
+            evStartKey = dateKeyInTimeZone(ev.startsAt, timeZone)
+            const evEndMs = parseEventBoundMs(ev.endsAt, ev.timeZone || timeZone)
+            evLastKey = Number.isFinite(evEndMs)
+              ? dateKeyInTimeZone(new Date(Math.max(0, evEndMs - 1)), timeZone)
+              : evStartKey
+          }
           for (const key of dateKeys) {
             if (key >= evStartKey && key <= evLastKey) {
               byDate.get(key)!.push(ev)
@@ -724,51 +822,10 @@ export const PURECALENDAR_FUNCTIONS: readonly AppFunctionDefinition<CalendarAgen
         const rawParticipants = Array.isArray(args.participants)
           ? args.participants
           : []
-        const resolvedParticipants: MeetingParticipantInput[] = []
-        const participantSources: Array<{
-          label: string
-          timeZone: string
-          timeZoneSource: 'provided' | 'savedContact'
-        }> = []
-
-        for (let i = 0; i < rawParticipants.length; i++) {
-          const item = rawParticipants[i]
-          if (!item || typeof item !== 'object') {
-            throw new AgentCalendarToolError(
-              `Participant #${i + 1} must be an object with at least a timeZone (or match a saved contact).`,
-            )
-          }
-          const rec = item as Record<string, unknown>
-          const name = trimmedString(rec.name) || undefined
-          const email = trimmedString(rec.email) || undefined
-          const explicitZone = trimmedString(rec.timeZone)
-          if (explicitZone) {
-            resolvedParticipants.push({ name, email, timeZone: explicitZone })
-            participantSources.push({
-              label: name || email || `Participant ${i + 1}`,
-              timeZone: explicitZone,
-              timeZoneSource: 'provided',
-            })
-            continue
-          }
-          const saved = findSavedContactTimeZone(owner.store, email, name)
-          if (saved) {
-            resolvedParticipants.push({
-              name: name || saved.matchedName,
-              email,
-              timeZone: saved.timeZone,
-            })
-            participantSources.push({
-              label: name || saved.matchedName || email || `Participant ${i + 1}`,
-              timeZone: saved.timeZone,
-              timeZoneSource: 'savedContact',
-            })
-            continue
-          }
-          throw new AgentCalendarToolError(
-            `Participant "${name || email || `#${i + 1}`}" has no timeZone and was not found in saved contacts. Ask for their IANA time zone (e.g. Europe/Berlin) rather than guessing.`,
-          )
-        }
+        const {
+          participants: resolvedParticipants,
+          sources: participantSources,
+        } = resolveMeetingParticipants(rawParticipants, owner.store)
 
         const input: Partial<MeetingRequestInput> = {
           title: trimmedString(args.title) || undefined,
@@ -989,7 +1046,15 @@ export const PURECALENDAR_FUNCTIONS: readonly AppFunctionDefinition<CalendarAgen
           const spansNextDay =
             dateKeyInTimeZone(new Date(Math.max(0, item.endMs - 1)), timeZone) !==
             date
-          if (startMin < workStartMin || spansNextDay || endMin > workEndMin) {
+          const endsAtMidnight =
+            !spansNextDay &&
+            dateKeyInTimeZone(new Date(item.endMs), timeZone) !== date
+          const effectiveEndMin = endsAtMidnight ? 24 * 60 : endMin
+          if (
+            startMin < workStartMin ||
+            spansNextDay ||
+            effectiveEndMin > workEndMin
+          ) {
             outsideWorkingHours.push({
               id: ev.id,
               title: ev.title,
@@ -1271,6 +1336,29 @@ export const PURECALENDAR_FUNCTIONS: readonly AppFunctionDefinition<CalendarAgen
             ? `hold_${now.getTime().toString(36)}`
             : undefined)
 
+        // Pre-compute private draft holds slated for release in this call so
+        // confirming one of those held slots (or replacing them) doesn't
+        // self-conflict before step 3 commits their removal. If confirmation
+        // fails, nothing is deleted.
+        const pendingReleaseDraftIds = new Set<string>()
+        if (releaseHoldIdsArg.length > 0 || releaseHoldGroupId) {
+          const previewStore = ctx.getStore()
+          const candidateIds = new Set<string>(releaseHoldIdsArg)
+          if (releaseHoldGroupId) {
+            for (const ev of previewStore.events) {
+              if (ev.holdGroupId !== releaseHoldGroupId) continue
+              if (keepEventId && ev.id === keepEventId) continue
+              candidateIds.add(ev.id)
+            }
+          }
+          for (const id of candidateIds) {
+            const ev = previewStore.events.find(e => e.id === id)
+            if (ev && isDraftEvent(ev) && canEditCalendarEvent(previewStore, ev)) {
+              pendingReleaseDraftIds.add(ev.id)
+            }
+          }
+        }
+
         // 1. Optional confirmed meeting draft (exact meetingDraftFlow recheck)
         if (confirmArg) {
           const startsAt = trimmedString(confirmArg.startsAt)
@@ -1279,14 +1367,18 @@ export const PURECALENDAR_FUNCTIONS: readonly AppFunctionDefinition<CalendarAgen
               'confirmMeetingDraft.startsAt is required.',
             )
           }
+          const resolvedConfirmParticipants = Array.isArray(
+            confirmArg.participants,
+          )
+            ? resolveMeetingParticipants(confirmArg.participants, ctx.getStore())
+                .participants
+            : undefined
           const meetingInput: Partial<MeetingRequestInput> = {
             title: trimmedString(confirmArg.title) || undefined,
             durationMinutes: confirmArg.durationMinutes as number,
             from: trimmedString(confirmArg.from),
             to: trimmedString(confirmArg.to),
-            participants: confirmArg.participants as
-              | MeetingRequestInput['participants']
-              | undefined,
+            participants: resolvedConfirmParticipants,
             bufferBeforeMinutes: confirmArg.bufferBeforeMinutes as
               | number
               | undefined,
@@ -1313,18 +1405,42 @@ export const PURECALENDAR_FUNCTIONS: readonly AppFunctionDefinition<CalendarAgen
                   }
                 : { status: 'none' },
             )
+          let unfilteredOwnerStore: CalendarStore | null = null
+          const readOwnerForConfirm = async (): Promise<OwnerCalendarRead> => {
+            const owner = await ctx.readOwnerNow()
+            unfilteredOwnerStore = owner.store
+            if (pendingReleaseDraftIds.size === 0) return owner
+            return {
+              ...owner,
+              store: {
+                ...owner.store,
+                events: owner.store.events.filter(
+                  e => !pendingReleaseDraftIds.has(e.id),
+                ),
+              },
+            }
+          }
           const outcome = await meetingDraftFlow.run(
             meetingInput,
             startsAt,
             qualifiedBy,
             {
-              readOwner: ctx.readOwnerNow,
+              readOwner: readOwnerForConfirm,
               readParticipants: (participants, from, to) =>
-                readParticipantAvailability(participants, from, to, reader),
-              saveDraft: (event, base) =>
-                ctx.commitStore(base, current =>
-                  withMeetingDraft(current, event, base),
+                readParticipantAvailability(
+                  participants,
+                  from,
+                  to,
+                  reader,
+                  ctx.now ? ctx.now() : new Date(),
                 ),
+              saveDraft: (event, base) => {
+                const realBase = unfilteredOwnerStore ?? base
+                ctx.commitStore(realBase, current =>
+                  withMeetingDraft(current, event, realBase),
+                )
+              },
+              now: ctx.now,
             },
           )
           if (outcome.kind === 'invalid') {
@@ -1464,13 +1580,13 @@ export const PURECALENDAR_FUNCTIONS: readonly AppFunctionDefinition<CalendarAgen
               )
             }
 
-            // Check against visible busy events + already-prepared holds
+            // Check against visible busy events (excluding holds being released in this call) + already-prepared holds
             if (!allowOverlap) {
               const existingInSlot = visibleCalendarEvents(
                 store,
                 event.startsAt,
                 event.endsAt,
-              ).filter(isBusyEvent)
+              ).filter(e => isBusyEvent(e) && !pendingReleaseDraftIds.has(e.id))
               const overlappingPrepared = preparedDrafts.filter(
                 draft =>
                   Date.parse(draft.startsAt) < Date.parse(event.endsAt) &&
